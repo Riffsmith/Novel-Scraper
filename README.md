@@ -1,8 +1,8 @@
-# 📖 WebNovel Scraper
+# WebNovel Scraper (Vibe Coded)
 
 **Elite TUI-based web novel scraper → EPUB packager**
 
-Playwright-powered, stealth-layered, concurrency-controlled scraper with a clean terminal UI. Scrapes any web novel and packages it into a polished, standard-compliant EPUB 3 file.
+Playwright-powered, stealth-layered, concurrency-controlled scraper with a clean terminal UI. Scrapes web novel and packages it into a polished, standard-compliant EPUB 3 file.
 
 ---
 
@@ -43,8 +43,6 @@ git clone <repo-url> && cd webnovel-scraper
 pnpm install
 pnpm exec playwright install chromium
 
-# Optional: inspect config location before first run
-node -e "import('./src/config/appConfig.js').then(m => console.log(m.CONFIG_FILE))"
 ```
 
 ---
@@ -225,22 +223,6 @@ Compatible with: Readest, Calibre, Apple Books, KOReader, Moon+ Reader, Thorium,
 
 ---
 
-## Stealth Stack
-
-| Layer | Detail |
-|---|---|
-| `puppeteer-extra-plugin-stealth` | webdriver flag, plugin list, permissions, iframe checks |
-| Canvas noise | Subtle pixel perturbation on `toDataURL` |
-| Real UA rotation | Current Chrome / Firefox / Safari / Edge user-agents |
-| Viewport rotation | Common desktop resolutions |
-| Locale + timezone | `en-US` / `America/New_York` |
-| Resource blocking | Media, fonts, analytics, ad networks aborted at context level |
-| `sec-ch-ua` headers | Matched to spoofed UA |
-| Request jitter | Configurable random delay per task |
-| Concurrency cap | Max 5 parallel pages (default 2) |
-
----
-
 ## Logs
 
 All runs write to `./logs/`:
@@ -301,6 +283,3 @@ Exclusions:
 
 ---
 
-## License
-
-MIT — use freely, scrape responsibly.
