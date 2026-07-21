@@ -124,6 +124,7 @@ async function editGroup(
   if (group === 'browser') {
     const r = await prompt<{
       headless: boolean; waitUntil: string; navigationTimeoutMs: string;
+      humanize: boolean; humanPreset: string; fingerprintSeed: string;
     }>([
       {
         type   : 'confirm',
@@ -152,11 +153,43 @@ async function editGroup(
           return (!isNaN(n) && n >= 5_000) || 'Must be ≥ 5000 ms';
         },
       },
+      {
+        type   : 'confirm',
+        name   : 'humanize',
+        message: 'Humanize mouse / keyboard / scroll? (slower but defeats behavioural detection)',
+        initial: cfg.humanize,
+      },
+      {
+        type   : 'select',
+        name   : 'humanPreset',
+        message: 'Human behavior preset:',
+        choices: [
+          { name: 'default', message: 'default  — normal speed, natural movement' },
+          { name: 'careful', message: 'careful  — slower, deliberate, idle micro-movements' },
+        ],
+        initial: cfg.humanPreset,
+      },
+      {
+        type    : 'input',
+        name    : 'fingerprintSeed',
+        message : 'Fingerprint seed (integer for fixed identity, blank = random per launch):',
+        initial : cfg.fingerprintSeed !== null ? String(cfg.fingerprintSeed) : '',
+        hint    : 'Fixed seed = same GPU/canvas fingerprint every run — looks like a returning device',
+        validate: (v: string) => {
+          if (v.trim() === '') return true;
+          const n = parseInt(v.trim(), 10);
+          return (!isNaN(n) && n > 0) || 'Must be a positive integer or blank';
+        },
+      },
     ]);
+    const seedStr = r.fingerprintSeed.trim();
     return {
       headless            : r.headless,
       waitUntil           : r.waitUntil as AppConfig['waitUntil'],
       navigationTimeoutMs : parseInt(r.navigationTimeoutMs, 10),
+      humanize            : r.humanize,
+      humanPreset         : r.humanPreset as AppConfig['humanPreset'],
+      fingerprintSeed     : seedStr ? parseInt(seedStr, 10) : null,
     };
   }
 
@@ -257,6 +290,9 @@ function printConfig(cfg: AppConfig): void {
     ['headless',             String(cur.headless),               true ],
     ['waitUntil',            cur.waitUntil            as string, true ],
     ['navigationTimeoutMs',  `${cur.navigationTimeoutMs} ms`,    true ],
+    ['humanize',             String(cur.humanize),               true ],
+    ['humanPreset',          cur.humanPreset          as string, true ],
+    ['fingerprintSeed',      cur.fingerprintSeed !== null ? String(cur.fingerprintSeed) : 'random', true],
     ['maxRetries',           String(cur.maxRetries),             true ],
     ['defaultLanguage',      cur.defaultLanguage      as string, true ],
     ['defaultAuthor',        cur.defaultAuthor        as string, true ],

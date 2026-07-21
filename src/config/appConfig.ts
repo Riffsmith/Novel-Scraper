@@ -61,6 +61,20 @@ export const DEFAULT_CONFIG: AppConfig = {
   // Milliseconds before a page.goto() is considered failed.
   navigationTimeoutMs : 30_000,
 
+  // ── CloakBrowser stealth options ──────────────────────────────────────
+  // Simulate human mouse/keyboard/scroll behavior via Bézier curves and
+  // per-character timing.  Recommended for sites with reCAPTCHA v3 or
+  // behavioral analysis (DataDome, PerimeterX).  Slows scraping ~20–40%.
+  humanize            : false,
+
+  // 'default' = normal speed.  'careful' = slower, with idle micro-movements.
+  humanPreset         : 'default',
+
+  // null  = fresh random fingerprint per launch (good for one-off scrapes).
+  // number = fixed seed, same device identity every run (good for revisiting
+  //          the same site repeatedly — looks like a returning user to reCAPTCHA).
+  fingerprintSeed     : null,
+
   // How many times a failed chapter is retried before being dropped.
   maxRetries          : 3,
 

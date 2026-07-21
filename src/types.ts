@@ -26,6 +26,18 @@ export interface AppConfig {
   waitUntil           : WaitUntil; // 'domcontentloaded'
   navigationTimeoutMs : number;    // 30000
 
+  // ── CloakBrowser stealth options ──────────────────────────────────────
+  // humanize: replace all mouse/keyboard/scroll actions with human-like
+  // Bézier curves and per-character timing.  Slows scraping by ~20–40%
+  // but substantially reduces behavioural bot-detection scores.
+  humanize            : boolean;          // false
+  humanPreset         : 'default' | 'careful';  // 'default'
+  // fingerprintSeed: pin a deterministic browser identity across sessions.
+  // null = new random fingerprint on every launch (good for one-off scrapes).
+  // A fixed integer = same GPU/canvas/screen values every time (good for
+  // revisiting the same site repeatedly — looks like a returning device).
+  fingerprintSeed     : number | null;    // null
+
   // ── Scraping ──────────────────────────────────────────────────────────
   maxRetries          : number;    // 3
 

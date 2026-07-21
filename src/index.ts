@@ -150,7 +150,14 @@ async function startScrape(): Promise<void> {
   // Sequential + TOC scrapers read waitUntil directly from appCfg below.
 
   // ── 5. Launch browser ─────────────────────────────────────────────────
-  const browser = await getBrowser(appCfg.headless);
+  const browser = await getBrowser({
+    headless        : appCfg.headless,
+    humanize        : appCfg.humanize,
+    humanPreset     : appCfg.humanPreset,
+    fingerprintSeed : appCfg.fingerprintSeed,
+    timezone        : 'America/New_York',
+    locale          : appCfg.defaultLanguage === 'en' ? 'en-US' : appCfg.defaultLanguage,
+  });
 
   try {
     // ── 6. URL collection ────────────────────────────────────────────────
