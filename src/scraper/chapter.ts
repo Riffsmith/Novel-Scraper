@@ -12,6 +12,52 @@ import {
   waitForSelector,
 } from './selectors.js';
 
+// ── Anti-bot / security-check interstitial handling ───────────────────────
+// Sites that rate-limit scraping (WTR-LAB included) serve a "verifying
+// activity" page instead of the chapter when the request pattern looks
+// automated. These can clear on their own within seconds if the browser
+// looks legitimate — but only if we wait instead of failing on first sight.
+const CHALLENGE_MAX_WAIT_MS = 30_000;
+const CHALLENGE_POLL_MS     = 2_000;
+
+const CHALLENGE_SIGNS = [
+  /security check required/i,
+  /unusual (reading|browsing) activity/i,
+  /verify you.?re (a )?human/i,
+  /checking your browser/i,
+  /just a moment/i,
+  /loading security challenge/i,
+];
+
+async function looksLikeChallenge(page: Page): Promise<boolean> {
+  const text = await page.evaluate(() => document.body?.innerText ?? '').catch(() => '');
+  return CHALLENGE_SIGNS.some(re => re.test(text));
+}
+
+async function waitOutChallenge(page: Page): Promise<'cleared' | 'stuck' | 'none'> {
+  if (!(await looksLikeChallenge(page))) return 'none';
+
+  logger.warn('Security challenge detected — waiting for it to clear…');
+  const deadline = Date.now() + CHALLENGE_MAX_WAIT_MS;
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, CHALLENGE_POLL_MS));
+    if (!(await looksLikeChallenge(page))) {
+      logger.info('Security challenge cleared');
+      return 'cleared';
+    }
+  }
+  logger.warn(`Security challenge still present after ${CHALLENGE_MAX_WAIT_MS}ms`);
+  return 'stuck';
+}
+
+export class SecurityChallengeError extends Error {
+  constructor(url: string) {
+    super(`Security challenge did not clear: ${url}`);
+    this.name = 'SecurityChallengeError';
+  }
+}
+
 // ── Sanitisation allow-list ──────────────────────────────────────────────
 const SANITIZE_OPTS: sanitizeHtml.IOptions = {
   allowedTags: [
@@ -81,6 +127,10 @@ export async function scrapeChapter(
   try {
     await page.goto(url, { waitUntil: opts.waitUntil, timeout: opts.navTimeoutMs });
 
+    if ((await waitOutChallenge(page)) === 'stuck') {
+      throw new SecurityChallengeError(url);
+    }
+
     // Best-effort wait; XPath selectors work here too via waitForSelector helper
     await waitForSelector(page, opts.contentSelector, 10_000);
 
@@ -146,9 +196,10 @@ export async function scrapeChapter(
     logger.debug(`✓  chapter ${index} "${title}" — ${wordCount} words`);
 
     return { index, title, url, htmlContent: clean, wordCount };
-
-  } catch (e) {
+    } catch (e) {
+    if (e instanceof SecurityChallengeError) throw e; // let the queue apply a longer backoff
     logger.error(`scrapeChapter failed at ${url}: ${(e as Error).message}`);
     return null;
   }
+    
 }

@@ -24,8 +24,6 @@ import type { Browser, BrowserContext, Page, Cookie } from 'playwright';
 import { createRequire } from 'module';
 import logger from '../logger/index.js';
 
-const require = createRequire(import.meta.url);
-
 // ── CloakBrowser launch options ───────────────────────────────────────────────
 export interface BrowserLaunchOpts {
   headless        : boolean;
@@ -57,7 +55,7 @@ export async function getBrowser(opts: BrowserLaunchOpts): Promise<Browser> {
   });
 
   // Dynamically require cloakbrowser (CJS-compatible path)
-  const { launch } = require('cloakbrowser');
+  const { launch } = await import('cloakbrowser');
 
   const extraArgs: string[] = [];
   if (opts.fingerprintSeed !== null) {

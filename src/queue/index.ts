@@ -3,10 +3,11 @@ import type { Browser, Cookie }  from 'playwright';
 import type { Chapter, QueueTask, ScrapeError, ScraperConfig, AppConfig } from '../types.js';
 import { createStealthContext, createPage, randomDelay } from '../scraper/browser.js';
 import type { BrowserContext } from 'playwright';
-import { scrapeChapter }   from '../scraper/chapter.js';
+import { scrapeChapter, SecurityChallengeError } from '../scraper/chapter.js';
 import logger              from '../logger/index.js';
 import { createProgressBar } from '../tui/display.js';
 import chalk               from 'chalk';
+const CHALLENGE_BACKOFF_MS = 45_000; // longer pause when we got flagged, not just erred
 
 export interface QueueResult {
   chapters : Chapter[];
@@ -49,7 +50,7 @@ export async function runScrapeQueue(
   // ── Queue ──────────────────────────────────────────────────────────────
   const queue = new PQueue({ concurrency });
 
-  const processTask = async (task: QueueTask): Promise<void> => {
+const processTask = async (task: QueueTask): Promise<void> => {
     const ctx  = nextCtx();
     const page = await createPage(ctx);
 
@@ -83,10 +84,11 @@ export async function runScrapeQueue(
         errors.push({ url: task.url, error: 'No content extracted after max retries', retries: task.retries });
       }
     } catch (e) {
+      const isChallenge = e instanceof SecurityChallengeError;
       if (task.retries < task.maxRetries) {
         task.retries++;
-        const backoff = task.retries * delayMax;
-        logger.warn(`Error ch.${task.index + 1} – retrying (${task.retries}/${task.maxRetries}): ${(e as Error).message}`);
+        const backoff = isChallenge ? task.retries * CHALLENGE_BACKOFF_MS : task.retries * delayMax;
+        logger.warn(`${isChallenge ? 'Security challenge on' : 'Error on'} ch.${task.index + 1} – retrying (${task.retries}/${task.maxRetries}) after ${backoff}ms: ${(e as Error).message}`);
         await new Promise(r => setTimeout(r, backoff));
         await queue.add(() => processTask(task));
         return;

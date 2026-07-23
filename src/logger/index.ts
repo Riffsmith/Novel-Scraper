@@ -43,8 +43,10 @@ const fileFormat = winston.format.combine(
 // ── Logger instance ────────────────────────────────────────────────────────
 export const logger = winston.createLogger({
   level: (process as NodeJS.Process).env['LOG_LEVEL'] ?? 'info',
+  exitOnError: false,   // ← add this — don't let a logged exception/rejection kill the process
 
   transports: [
+    // ...unchanged
     // Pretty console (suppressed in TUI-heavy flows by LOG_LEVEL=warn)
     new winston.transports.Console({
       format: winston.format.combine(

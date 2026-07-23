@@ -19,7 +19,7 @@ export interface AppConfig {
   defaultDelayMax     : number;    // 3500 ms
 
   // ── Browser ───────────────────────────────────────────────────────────
-  headless            : boolean;   // true
+  headless            : false;   // true
   // Which navigation event to wait for before extracting content.
   // 'domcontentloaded' = fastest (default). 'networkidle' = safer for
   // JS-heavy sites but slower. 'load' = wait for all resources.
@@ -30,7 +30,7 @@ export interface AppConfig {
   // humanize: replace all mouse/keyboard/scroll actions with human-like
   // Bézier curves and per-character timing.  Slows scraping by ~20–40%
   // but substantially reduces behavioural bot-detection scores.
-  humanize            : boolean;          // false
+  humanize            : true;          // false
   humanPreset         : 'default' | 'careful';  // 'default'
   // fingerprintSeed: pin a deterministic browser identity across sessions.
   // null = new random fingerprint on every launch (good for one-off scrapes).

@@ -4,6 +4,7 @@ import type {
   ScraperConfig, NovelMetadata, CoverSource,
   NextLocator, AppConfig, SiteProfile,
 } from '../types.js';
+import type { AutoScrapeResult, SiteAdapter } from '../sites/types.js';
 import { formatLocator } from '../scraper/selectors.js';
 
 import { createRequire } from 'module';
@@ -101,11 +102,7 @@ async function promptLocator(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  gatherConfig
-//
-//  Parameters:
-//    appCfg  — global settings loaded at boot (used for defaults)
-//    profile — site profile for this domain, if one exists (pre-fills selectors)
+//  gatherConfig — manual setup wizard (unchanged)
 // ═══════════════════════════════════════════════════════════════════════════
 export async function gatherConfig(
   appCfg : AppConfig,
@@ -436,6 +433,277 @@ export async function gatherConfig(
     separateTitle     : cfg.separateTitle!,
     titleSelector     : cfg.titleSelector,
     excludeSelectors  : cfg.excludeSelectors!,
+    metadata          : meta as NovelMetadata,
+    outputDir         : ro1.outputDir.trim(),
+    outputFilename    : ro2.outputFilename.trim(),
+    concurrency       : parseInt(rp1.concurrency, 10),
+    delayMin,
+    delayMax,
+    headless          : appCfg.headless,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  gatherAutoConfig — review/edit screen for an AUTO scrape.
+//
+//  Chapter URLs and novel metadata were already fetched by a SiteAdapter;
+//  this wizard skips the scraping-method/URL-entry sections of gatherConfig
+//  and instead lets the user review & tweak: extraction selectors (pre-
+//  filled from adapter defaults), metadata (pre-filled from the scrape),
+//  output, and performance — before confirming the run.
+// ═══════════════════════════════════════════════════════════════════════════
+export async function gatherAutoConfig(
+  appCfg : AppConfig,
+  profile: SiteProfile | null,
+  adapter: SiteAdapter,
+  auto   : AutoScrapeResult,
+): Promise<ScraperConfig> {
+  disp.banner();
+
+  disp.section('🤖  Auto-Scrape Review');
+  disp.success(`Site        : ${adapter.label}`);
+  disp.info   (`Novel       : ${chalk.cyan(auto.metadata.title)}`);
+  disp.info   (`Author      : ${chalk.cyan(auto.metadata.author)}`);
+  disp.info   (`Chapters    : ${chalk.cyan(String(auto.chapterLinks.length))}`);
+  if (auto.metadata.coverUrl) disp.info(`Cover       : ${chalk.dim(auto.metadata.coverUrl)}`);
+  console.log('');
+  disp.dim('Everything below is pre-filled from the site — review and edit as needed.');
+  console.log('');
+
+  if (profile) {
+    disp.section('🗂   Site Profile Loaded');
+    disp.success(`Found a saved profile for ${chalk.cyan(profile.domain)}`);
+    disp.dim    (`Label: ${profile.label ?? '(no label)'}`);
+    console.log('');
+  }
+
+  // ── 1. Content extraction ────────────────────────────────────────────────
+  disp.section('🎯  Content Extraction');
+  disp.dim(SELECTOR_HINT);
+  disp.dim('Pre-filled with the site adapter default — verify against a real chapter page before a big run.');
+  console.log('');
+
+  const { contentSelector } = await prompt<{ contentSelector: string }>({
+    type    : 'input',
+    name    : 'contentSelector',
+    message : 'Chapter content container:',
+    hint    : 'CSS or XPath  e.g.  .chapter-content  |  //div[@id="chapter-body"]',
+    initial : profile?.contentSelector ?? adapter.defaultContentSelector,
+    validate: validateNonEmpty('Content selector'),
+  });
+
+  const { separateTitle } = await prompt<{ separateTitle: boolean }>({
+    type   : 'confirm',
+    name   : 'separateTitle',
+    message: 'Extract chapter title from a separate element?',
+    initial: profile?.separateTitle ?? adapter.defaultSeparateTitle,
+  });
+
+  let titleSelector: string | undefined;
+  if (separateTitle) {
+    const r = await prompt<{ titleSelector: string }>({
+      type    : 'input',
+      name    : 'titleSelector',
+      message : 'Chapter title element:',
+      hint    : 'CSS or XPath  e.g.  .chapter-title  |  //h1[@class="title"]',
+      initial : profile?.titleSelector ?? adapter.defaultTitleSelector ?? '',
+      validate: validateNonEmpty('Title selector'),
+    });
+    titleSelector = r.titleSelector.trim();
+  }
+
+  // ── 2. Exclusions ─────────────────────────────────────────────────────────
+  disp.section('🚫  Exclusions (optional)');
+
+  const profileExcludes = profile?.excludeSelectors ?? adapter.defaultExcludeSelectors;
+
+  const { hasExclusions } = await prompt<{ hasExclusions: boolean }>({
+    type   : 'confirm',
+    name   : 'hasExclusions',
+    message: 'Exclude any elements from scraped content?',
+    initial: profileExcludes.length > 0,
+  });
+
+  let excludeSelectors: string[] = [];
+  if (hasExclusions) {
+    disp.dim('CSS and XPath accepted. Comma-separated.');
+    const r = await prompt<{ exclusionList: string }>({
+      type   : 'input',
+      name   : 'exclusionList',
+      message: 'Selectors to exclude:',
+      initial: profileExcludes.join(', '),
+    });
+    excludeSelectors = r.exclusionList.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  // ── 3. Novel metadata (pre-filled, editable) ────────────────────────────
+  disp.section('📋  Novel Metadata');
+
+  const meta: Partial<NovelMetadata> = {};
+
+  const rm1 = await prompt<{ title: string }>({
+    type    : 'input',
+    name    : 'title',
+    message : 'Novel title:',
+    initial : auto.metadata.title,
+    validate: validateNonEmpty('Title'),
+  });
+  meta.title = rm1.title.trim();
+
+  const rm2 = await prompt<{ author: string }>({
+    type   : 'input',
+    name   : 'author',
+    message: 'Author name:',
+    initial: auto.metadata.author || appCfg.defaultAuthor,
+  });
+  meta.author = rm2.author.trim() || appCfg.defaultAuthor;
+
+  const rm3 = await prompt<{ language: string }>({
+    type   : 'input',
+    name   : 'language',
+    message: 'Language code (ISO 639-1):',
+    initial: appCfg.defaultLanguage,
+  });
+  meta.language = rm3.language.trim() || appCfg.defaultLanguage;
+
+  const rm4 = await prompt<{ publisher: string }>({
+    type   : 'input',
+    name   : 'publisher',
+    message: 'Publisher / source (optional):',
+    initial: appCfg.defaultPublisher,
+  });
+  meta.publisher = rm4.publisher.trim() || appCfg.defaultPublisher;
+
+  const { hasSynopsis } = await prompt<{ hasSynopsis: boolean }>({
+    type   : 'confirm',
+    name   : 'hasSynopsis',
+    message: 'Include the auto-fetched synopsis / description?',
+    initial: auto.metadata.description.length > 0,
+  });
+  if (hasSynopsis) {
+    const rs = await prompt<{ synopsis: string }>({
+      type   : 'input',
+      name   : 'synopsis',
+      message: 'Synopsis:',
+      initial: auto.metadata.description,
+    });
+    meta.synopsis = rs.synopsis.trim();
+  }
+
+  const { coverSource } = await prompt<{ coverSource: string }>({
+    type   : 'select',
+    name   : 'coverSource',
+    message: 'Cover image:',
+    choices: [
+      { name: 'none', message: '❌  No cover' },
+      { name: 'url',  message: '🔗  Download from a URL' },
+      { name: 'file', message: '📁  Local file path' },
+    ],
+    initial: auto.metadata.coverUrl ? 'url' : 'none',
+  });
+  meta.coverSource = coverSource as CoverSource;
+
+  if (coverSource === 'url') {
+    const rc = await prompt<{ coverUrl: string }>({
+      type    : 'input',
+      name    : 'coverUrl',
+      message : 'Cover image URL:',
+      initial : auto.metadata.coverUrl ?? '',
+      validate: validateUrl,
+    });
+    meta.coverUrl = rc.coverUrl.trim();
+  } else if (coverSource === 'file') {
+    const rc = await prompt<{ coverPath: string }>({
+      type: 'input', name: 'coverPath', message: 'Path to cover image file:', validate: validateNonEmpty('Path'),
+    });
+    meta.coverPath = rc.coverPath.trim();
+  }
+
+  // ── 4. Output ─────────────────────────────────────────────────────────────
+  disp.section('📁  Output Settings');
+
+  const ro1 = await prompt<{ outputDir: string }>({
+    type   : 'input',
+    name   : 'outputDir',
+    message: 'Output directory:',
+    initial: appCfg.defaultOutputDir,
+  });
+
+  const defaultFilename = meta.title!
+    .replace(/[^a-z0-9\s]/gi, '').trim()
+    .replace(/\s+/g, '_').toLowerCase() + '.epub';
+
+  const ro2 = await prompt<{ outputFilename: string }>({
+    type   : 'input',
+    name   : 'outputFilename',
+    message: 'Output filename (.epub):',
+    initial: defaultFilename,
+  });
+
+  // ── 5. Performance ────────────────────────────────────────────────────────
+  disp.section('⚡  Performance & Stealth');
+
+  const defConcurrency = profile?.concurrency ?? appCfg.defaultConcurrency;
+  const defDelayMin    = profile?.delayMin    ?? appCfg.defaultDelayMin;
+  const defDelayMax    = profile?.delayMax    ?? appCfg.defaultDelayMax;
+
+  const rp1 = await prompt<{ concurrency: string }>({
+    type   : 'input',
+    name   : 'concurrency',
+    message: 'Concurrent browser pages (1–5):',
+    initial: String(defConcurrency),
+    validate: (v: string) => {
+      const n = parseInt(v, 10);
+      return (!isNaN(n) && n >= 1 && n <= 5) || 'Must be between 1 and 5';
+    },
+  });
+
+  const rp2 = await prompt<{ delayRange: string }>({
+    type   : 'input',
+    name   : 'delayRange',
+    message: 'Delay range between requests in ms (min-max):',
+    initial: `${defDelayMin}-${defDelayMax}`,
+    validate: (v: string) => {
+      const [a, b] = v.split('-').map(Number);
+      return (!isNaN(a) && !isNaN(b) && a >= 0 && b >= a) || 'Format: min-max';
+    },
+  });
+
+  const [delayMin, delayMax] = rp2.delayRange.split('-').map(Number);
+
+  // ── 6. Confirmation ───────────────────────────────────────────────────────
+  disp.section('✅  Confirm');
+  console.log('');
+  disp.info(`Novel      : ${chalk.cyan(meta.title!)}`);
+  disp.info(`Author     : ${chalk.cyan(meta.author!)}`);
+  disp.info(`Chapters   : ${chalk.cyan(String(auto.chapterLinks.length))}`);
+  disp.info(`Content sel: ${chalk.cyan(contentSelector)}`);
+  if (profile) disp.info(`Profile    : ${chalk.cyan(profile.domain)} ${chalk.dim('(pre-filled)')}`);
+  disp.info(`Threads    : ${chalk.cyan(rp1.concurrency)}`);
+  disp.info(`Delay      : ${chalk.cyan(rp2.delayRange)} ms`);
+  disp.info(`Output     : ${chalk.cyan(ro1.outputDir + '/' + ro2.outputFilename)}`);
+  console.log('');
+
+  const { confirmed } = await prompt<{ confirmed: boolean }>({
+    type   : 'confirm',
+    name   : 'confirmed',
+    message: 'Start scraping with these settings?',
+    initial: true,
+  });
+
+  if (!confirmed) {
+    console.log(chalk.yellow('\n  Aborted by user.\n'));
+    process.exit(0);
+  }
+
+  return {
+    method            : 'toc',
+    tocUrl            : adapter.getTocUrl(auto.novelUrl),
+    chapterLinks      : auto.chapterLinks,
+    contentSelector,
+    separateTitle,
+    titleSelector,
+    excludeSelectors,
     metadata          : meta as NovelMetadata,
     outputDir         : ro1.outputDir.trim(),
     outputFilename    : ro2.outputFilename.trim(),
