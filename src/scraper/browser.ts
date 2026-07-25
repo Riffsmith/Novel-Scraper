@@ -20,22 +20,22 @@
 //    • Accept-Language / Accept headers (HTTP level, complements binary UA)
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { Browser, BrowserContext, Page, Cookie } from 'playwright';
-import { createRequire } from 'module';
-import logger from '../logger/index.js';
+import type { Browser, BrowserContext, Page, Cookie } from "playwright";
+import { createRequire } from "module";
+import logger from "../logger/index.js";
 
 // ── CloakBrowser launch options ───────────────────────────────────────────────
 export interface BrowserLaunchOpts {
-  headless        : boolean;
+  headless: boolean;
   // humanize=true → Bézier mouse curves, per-character keyboard timing, human
   // scroll patterns on every page.click / page.fill / page.type call.
-  humanize        : boolean;
-  humanPreset     : 'default' | 'careful';
+  humanize: boolean;
+  humanPreset: "default" | "careful";
   // fingerprintSeed: deterministic fingerprint across sessions (same seed = same
   // GPU/screen/canvas on every launch).  null = new random identity each time.
-  fingerprintSeed : number | null;
-  timezone        : string;
-  locale          : string;
+  fingerprintSeed: number | null;
+  timezone: string;
+  locale: string;
 }
 
 // ── Singleton browser ─────────────────────────────────────────────────────────
@@ -45,44 +45,44 @@ let _launchOpts: BrowserLaunchOpts | null = null;
 export async function getBrowser(opts: BrowserLaunchOpts): Promise<Browser> {
   if (_browser) return _browser;
 
-  logger.info('Launching CloakBrowser (source-level stealth Chromium)…', {
-    headless    : opts.headless,
-    humanize    : opts.humanize,
-    humanPreset : opts.humanPreset,
-    seed        : opts.fingerprintSeed ?? 'random',
-    timezone    : opts.timezone,
-    locale      : opts.locale,
+  logger.info("Launching CloakBrowser (source-level stealth Chromium)…", {
+    headless: opts.headless,
+    humanize: opts.humanize,
+    humanPreset: opts.humanPreset,
+    seed: opts.fingerprintSeed ?? "random",
+    timezone: opts.timezone,
+    locale: opts.locale,
   });
 
   // Dynamically require cloakbrowser (CJS-compatible path)
-  const { launch } = await import('cloakbrowser');
+  const { launch } = await import("cloakbrowser");
 
   const extraArgs: string[] = [];
   if (opts.fingerprintSeed !== null) {
     extraArgs.push(`--fingerprint=${opts.fingerprintSeed}`);
   }
 
-  _browser = await launch({
-    headless    : opts.headless,
-    humanize    : opts.humanize,
-    humanPreset : opts.humanPreset,
-    timezone    : opts.timezone,
-    locale      : opts.locale,
-    args        : extraArgs,
-  }) as Browser;
+  _browser = (await launch({
+    headless: opts.headless,
+    humanize: opts.humanize,
+    humanPreset: opts.humanPreset,
+    timezone: opts.timezone,
+    locale: opts.locale,
+    args: extraArgs,
+  })) as Browser;
 
   _launchOpts = opts;
 
-  logger.info('CloakBrowser ready');
+  logger.info("CloakBrowser ready");
   return _browser!;
 }
 
 export async function closeBrowser(): Promise<void> {
   if (_browser) {
     await _browser.close();
-    _browser    = null;
+    _browser = null;
     _launchOpts = null;
-    logger.info('Browser closed');
+    logger.info("Browser closed");
   }
 }
 
@@ -96,10 +96,10 @@ export async function closeBrowser(): Promise<void> {
 // We intentionally do NOT set userAgent, viewport, or addInitScript — those
 // would conflict with CloakBrowser's coherent fingerprint profile.
 export async function createStealthContext(
-  browser : Browser,
+  browser: Browser,
   cookies?: Cookie[],
 ): Promise<BrowserContext> {
-  const locale = _launchOpts?.locale ?? 'en-US';
+  const locale = _launchOpts?.locale ?? "en-US";
 
   const context = await browser.newContext({
     // locale/timezoneId are already baked into the binary via launch() flags.
@@ -107,10 +107,11 @@ export async function createStealthContext(
     // Playwright's JS-side navigator.language matches the binary UA.
     locale,
     extraHTTPHeaders: {
-      'Accept-Language'          : `${locale},${locale.split('-')[0]};q=0.9,en;q=0.8`,
-      'Accept'                   : 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'DNT'                      : '1',
-      'Upgrade-Insecure-Requests': '1',
+      "Accept-Language": `${locale},${locale.split("-")[0]};q=0.9,en;q=0.8`,
+      Accept:
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      DNT: "1",
+      "Upgrade-Insecure-Requests": "1",
     },
   });
 
@@ -118,21 +119,21 @@ export async function createStealthContext(
   // This is a bandwidth / speed optimisation — not stealth. Fonts, media, and
   // major ad/analytics networks are aborted before they waste time or reveal
   // automation patterns via timing.
-  await context.route('**/*', (route) => {
-    const rt  = route.request().resourceType();
+  await context.route("**/*", (route) => {
+    const rt = route.request().resourceType();
     const url = route.request().url();
 
     const blocked =
-      rt === 'media'                         ||
-      rt === 'font'                          ||
-      url.includes('google-analytics')       ||
-      url.includes('googletagmanager')       ||
-      url.includes('doubleclick.net')        ||
-      url.includes('facebook.net')           ||
-      url.includes('adsbygoogle')            ||
-      url.includes('amazon-adsystem')        ||
-      url.includes('hotjar.com')             ||
-      url.includes('disqus.com');
+      rt === "media" ||
+      rt === "font" ||
+      url.includes("google-analytics") ||
+      url.includes("googletagmanager") ||
+      url.includes("doubleclick.net") ||
+      url.includes("facebook.net") ||
+      url.includes("adsbygoogle") ||
+      url.includes("amazon-adsystem") ||
+      url.includes("hotjar.com") ||
+      url.includes("disqus.com");
 
     blocked ? route.abort() : route.continue();
   });
@@ -157,5 +158,5 @@ export async function createPage(context: BrowserContext): Promise<Page> {
 // ── Utility ───────────────────────────────────────────────────────────────────
 export function randomDelay(min: number, max: number): Promise<void> {
   const ms = Math.floor(Math.random() * (max - min + 1)) + min;
-  return new Promise(r => setTimeout(r, ms));
+  return new Promise((r) => setTimeout(r, ms));
 }

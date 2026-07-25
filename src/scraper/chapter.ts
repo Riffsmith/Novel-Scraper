@@ -13,14 +13,33 @@ import {
 } from "./selectors.js";
 
 // ── Anti-bot / security-check interstitial handling ───────────────────────
-// Sites that rate-limit scraping (WTR-LAB included) serve a "verifying
-// activity" page instead of the chapter when the request pattern looks
-// automated. These can clear on their own within seconds if the browser
-// looks legitimate — but only if we wait instead of failing on first sight.
 const CHALLENGE_MAX_WAIT_MS = 30_000;
 const CHALLENGE_POLL_MS = 2_000;
 
-const CHALLENGE_SIGNS = [
+// Real interstitial/challenge pages are short boilerplate — a few hundred
+// characters. A scraped chapter is thousands of words. Gating the body-text
+// check on length means normal narrative dialogue (a story that literally
+// contains the phrase "just a moment") can never match, since chapter-length
+// pages always sail past this cap.
+const CHALLENGE_BODY_TEXT_MAX_LEN = 2_000;
+
+// Checked against document.title. Genuine anti-bot interstitials set a
+// distinctive <title> (Cloudflare's "Just a moment...", etc.); ordinary
+// novel content never touches document.title, so this is a strong,
+// low-false-positive signal on its own.
+const CHALLENGE_TITLE_SIGNS = [
+  /just a moment/i,
+  /attention required/i,
+  /security check/i,
+  /checking your browser/i,
+  /please wait/i,
+  /access denied/i,
+];
+
+// Checked against document.body.innerText, but ONLY when the page is short
+// (see CHALLENGE_BODY_TEXT_MAX_LEN above) — this is what let chapter prose
+// false-trigger before.
+const CHALLENGE_BODY_SIGNS = [
   /security check required/i,
   /unusual (reading|browsing) activity/i,
   /verify you.?re (a )?human/i,
@@ -29,24 +48,70 @@ const CHALLENGE_SIGNS = [
   /loading security challenge/i,
 ];
 
-async function looksLikeChallenge(page: Page): Promise<boolean> {
+// Structural markers from common anti-bot vendors. Presence of any of these
+// is treated as definitive regardless of text content or page length.
+const CHALLENGE_DOM_MARKERS = [
+  "#cf-wrapper",
+  "#challenge-form",
+  "#challenge-running",
+  'iframe[src*="challenges.cloudflare.com"]',
+  'div[class*="cf-browser-verification"]',
+];
+
+interface ChallengeCheckResult {
+  matched: boolean;
+  reason?: string; // logged so a future misfire is diagnosable from logs alone
+}
+
+async function detectChallenge(page: Page): Promise<ChallengeCheckResult> {
+  // 1) Structural markers — cheapest and most reliable, checked first.
+  for (const sel of CHALLENGE_DOM_MARKERS) {
+    const found = await page
+      .locator(sel)
+      .count()
+      .catch(() => 0);
+    if (found > 0) return { matched: true, reason: `dom marker "${sel}"` };
+  }
+
+  // 2) Title — narrative content never sets document.title.
+  const title = await page.title().catch(() => "");
+  for (const re of CHALLENGE_TITLE_SIGNS) {
+    if (re.test(title)) return { matched: true, reason: `title matched ${re}` };
+  }
+
+  // 3) Body text — only trusted on short pages, so real chapters never
+  //    reach this branch.
   const text = await page
     .evaluate(() => document.body?.innerText ?? "")
     .catch(() => "");
-  return CHALLENGE_SIGNS.some((re) => re.test(text));
+  if (text.length <= CHALLENGE_BODY_TEXT_MAX_LEN) {
+    for (const re of CHALLENGE_BODY_SIGNS) {
+      if (re.test(text))
+        return {
+          matched: true,
+          reason: `body text (len ${text.length}) matched ${re}`,
+        };
+    }
+  }
+
+  return { matched: false };
 }
 
 async function waitOutChallenge(
   page: Page,
 ): Promise<"cleared" | "stuck" | "none"> {
-  if (!(await looksLikeChallenge(page))) return "none";
+  const initial = await detectChallenge(page);
+  if (!initial.matched) return "none";
 
-  logger.warn("Security challenge detected — waiting for it to clear…");
+  logger.warn(
+    `Security challenge detected (${initial.reason}) — waiting for it to clear…`,
+  );
   const deadline = Date.now() + CHALLENGE_MAX_WAIT_MS;
 
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, CHALLENGE_POLL_MS));
-    if (!(await looksLikeChallenge(page))) {
+    const check = await detectChallenge(page);
+    if (!check.matched) {
       logger.info("Security challenge cleared");
       return "cleared";
     }
