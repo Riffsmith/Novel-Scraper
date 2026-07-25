@@ -55,8 +55,17 @@ export function createProgressBar(total: number): cliProgress.SingleBar {
   return bar;
 }
 
+// ── Print multi-paragraph text with blank lines between paragraphs ────────
+export function printParagraphs(text: string, indent = '  '): void {
+  const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  paragraphs.forEach((p, i) => {
+    p.split('\n').forEach(line => console.log(chalk.dim(indent) + chalk.white(line)));
+    if (i < paragraphs.length - 1) console.log('');
+  });
+}
+
 // ── Chapter link list preview ────────────────────────────────────────────────
-export function printChapterList(links: string[], maxDisplay = 30): void {
+export function printChapterList(links: string[], maxDisplay = 50): void {
   const show = links.slice(0, maxDisplay);
   show.forEach((link, i) =>
     console.log(

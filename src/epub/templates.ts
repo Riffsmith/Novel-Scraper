@@ -10,6 +10,21 @@ export function escXml(s: string): string {
     .replace(/'/g,  '&apos;');
 }
 
+function synopsisXhtml(text: string): string {
+  return text
+    .split(/\n{2,}/)
+    .map(p => p.trim())
+    .filter(Boolean)
+    .map(p => `<p>${escXml(p).replace(/\n/g, '<br/>')}</p>`)
+    .join('\n    ');
+}
+
+// ── Flatten to single-line plain text for OPF metadata (dc:description
+//    isn't a rendered field — it shouldn't carry paragraph markup).
+function flattenSynopsis(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 // ── Convert HTML → valid XHTML ─────────────────────────────────────────────
 export function toXhtml(html: string): string {
   return html
@@ -83,7 +98,7 @@ export function contentOpf(
     <dc:creator opf:role="aut">${escXml(meta.author)}</dc:creator>
     <dc:language>${escXml(meta.language)}</dc:language>
     <dc:publisher>${escXml(meta.publisher ?? 'WebNovel Scraper')}</dc:publisher>
-    ${meta.synopsis ? `<dc:description>${escXml(meta.synopsis)}</dc:description>` : ''}
+    ${meta.synopsis ? `<dc:description>${escXml(flattenSynopsis(meta.synopsis))}</dc:description>` : ''}
     <meta property="dcterms:modified">${now}</meta>
     <meta property="schema:accessMode">textual</meta>
 ${coverMeta}
@@ -186,8 +201,8 @@ ${navPoints}
 // OEBPS/title.xhtml
 // ─────────────────────────────────────────────────────────────────────────────
 export function titleXhtml(meta: NovelMetadata): string {
-  const synopsis = meta.synopsis
-    ? `\n  <div class="synopsis">\n    <p>${escXml(meta.synopsis)}</p>\n  </div>` : '';
+const synopsis = meta.synopsis
+    ? `\n  <div class="synopsis">\n    ${synopsisXhtml(meta.synopsis)}\n  </div>` : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>

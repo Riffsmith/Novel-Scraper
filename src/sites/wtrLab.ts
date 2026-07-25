@@ -17,6 +17,18 @@ function tocUrlFor(novelUrl: string): string {
   return u.toString();
 }
 
+async function extractParagraphText(page: Page, selector: string): Promise<string> {
+  const raw = await page.locator(selector).first().innerText({ timeout: 8_000 }).catch(() => null);
+  if (!raw) return '';
+
+  return raw
+    .split('\n')
+    .map(line => line.trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')   // collapse anything bigger than one blank line
+    .trim();
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 //  Metadata — title / author / description / cover from the novel's
 //  landing page.
@@ -31,8 +43,7 @@ async function scrapeMetadata(page: Page, novelUrl: string): Promise<AutoNovelMe
   const author = (await page.locator('p.text-xs').first().textContent().catch(() => null))
     ?.trim() || 'Unknown';
 
-  const description = (await page.locator('.description').first().textContent().catch(() => null))
-    ?.trim() || '';
+  const description = await extractParagraphText(page, '.description');
 
   let coverUrl: string | undefined;
   const coverSrc = await page.locator('img.relative').first().getAttribute('src').catch(() => null);

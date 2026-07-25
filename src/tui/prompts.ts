@@ -101,6 +101,26 @@ async function promptLocator(
   }
 }
 
+async function promptMultilineText(label: string, existing?: string): Promise<string> {
+  disp.dim(`Enter "${label}" one paragraph at a time. Leave a line blank when done.`);
+
+  const paragraphs: string[] = [];
+  let idx = 1;
+  while (true) {
+    const { line } = await prompt<{ line: string }>({
+      type   : 'input',
+      name   : 'line',
+      message: `Paragraph ${idx} (blank = done):`,
+    });
+    if (!line.trim()) break;
+    paragraphs.push(line.trim());
+    idx++;
+  }
+
+  if (paragraphs.length === 0) return existing?.trim() ?? '';
+  return paragraphs.join('\n\n');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  gatherConfig — manual setup wizard (unchanged)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -308,12 +328,7 @@ export async function gatherConfig(
     initial: false,
   });
   if (hasSynopsis) {
-    const rs = await prompt<{ synopsis: string }>({
-      type   : 'input',
-      name   : 'synopsis',
-      message: 'Synopsis:',
-    });
-    meta.synopsis = rs.synopsis.trim();
+    meta.synopsis = await promptMultilineText('Synopsis');
   }
 
   const { coverSource } = await prompt<{ coverSource: string }>({
@@ -574,20 +589,33 @@ export async function gatherAutoConfig(
   });
   meta.publisher = rm4.publisher.trim() || appCfg.defaultPublisher;
 
+  if (auto.metadata.description) {
+    disp.section('📝  Synopsis (auto-fetched)');
+    disp.printParagraphs(auto.metadata.description);
+    console.log('');
+  }
+
   const { hasSynopsis } = await prompt<{ hasSynopsis: boolean }>({
     type   : 'confirm',
     name   : 'hasSynopsis',
-    message: 'Include the auto-fetched synopsis / description?',
+    message: 'Include a synopsis / description?',
     initial: auto.metadata.description.length > 0,
   });
+
   if (hasSynopsis) {
-    const rs = await prompt<{ synopsis: string }>({
-      type   : 'input',
-      name   : 'synopsis',
-      message: 'Synopsis:',
-      initial: auto.metadata.description,
-    });
-    meta.synopsis = rs.synopsis.trim();
+    if (auto.metadata.description) {
+      const { editSynopsis } = await prompt<{ editSynopsis: boolean }>({
+        type   : 'confirm',
+        name   : 'editSynopsis',
+        message: 'Edit the auto-fetched synopsis? (No = keep it exactly as fetched, line breaks and all)',
+        initial: false,
+      });
+      meta.synopsis = editSynopsis
+        ? await promptMultilineText('Synopsis', auto.metadata.description)
+        : auto.metadata.description;
+    } else {
+      meta.synopsis = await promptMultilineText('Synopsis');
+    }
   }
 
   const { coverSource } = await prompt<{ coverSource: string }>({
