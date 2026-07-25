@@ -10,7 +10,7 @@ export function escXml(s: string): string {
     .replace(/'/g,  '&apos;');
 }
 
-function synopsisXhtml(text: string): string {
+function synopsisParagraphsXhtml(text: string): string {
   return text
     .split(/\n{2,}/)
     .map(p => p.trim())
@@ -40,6 +40,19 @@ export function toXhtml(html: string): string {
 // mimetype (must be plain text, first file in ZIP, uncompressed)
 // ─────────────────────────────────────────────────────────────────────────────
 export const MIMETYPE = 'application/epub+zip';
+
+// ── Embedded font(s) ─────────────────────────────────────────────────────────
+// Every embedded font gets one manifest entry pointing at OEBPS/fonts/<file>.
+// Add more entries here if additional fonts are embedded later (e.g. Firlest).
+interface EmbeddedFont {
+  id:       string;
+  filename: string;
+  mediaType: string;
+}
+
+export const EMBEDDED_FONTS: EmbeddedFont[] = [
+  { id: 'font-foglihten', filename: 'FoglihtenNo07_Subset_Deep.ttf', mediaType: 'font/ttf' },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // META-INF/container.xml
@@ -76,20 +89,30 @@ export function contentOpf(
     `    <itemref idref="ch-${ch.index}"/>`,
   ).join('\n');
 
+  // The cover now doubles as the book's title page (Calibre convention:
+  // properties="calibre:title-page" marks which manifest item is the title
+  // page for readers/tools that look for it).
   const coverManifest = hasCover ? `
     <item id="cover-img"  href="images/cover.jpg"  media-type="image/jpeg" properties="cover-image"/>
-    <item id="cover-page" href="cover.xhtml"        media-type="application/xhtml+xml"/>` : '';
+    <item id="cover-page" href="cover.xhtml"        media-type="application/xhtml+xml" properties="calibre:title-page"/>` : '';
 
+  // Part of the linear reading order now (no longer linear="no") since it's
+  // the first page a reader sees.
   const coverSpine = hasCover
-    ? `    <itemref idref="cover-page" linear="no"/>` : '';
+    ? `    <itemref idref="cover-page"/>` : '';
 
   const coverMeta = hasCover
     ? `    <meta name="cover" content="cover-img"/>` : '';
+
+  const fontManifest = EMBEDDED_FONTS.map((f) =>
+    `    <item id="${f.id}" href="fonts/${f.filename}" media-type="${f.mediaType}"/>`,
+  ).join('\n');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0"
          xmlns="http://www.idpf.org/2007/opf"
          unique-identifier="bookId"
+         prefix="calibre: https://calibre-ebook.com"
          xml:lang="${escXml(meta.language)}">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"
             xmlns:opf="http://www.idpf.org/2007/opf">
@@ -108,21 +131,22 @@ ${coverMeta}
     <item id="nav"        href="nav.xhtml"           media-type="application/xhtml+xml" properties="nav"/>
     <item id="ncx"        href="toc.ncx"             media-type="application/x-dtbncx+xml"/>
     <item id="css"        href="styles/style.css"    media-type="text/css"/>
-    <item id="title-page" href="title.xhtml"         media-type="application/xhtml+xml"/>
+    <item id="synopsis"   href="synopsis.xhtml"      media-type="application/xhtml+xml"/>
+${fontManifest}
 ${coverManifest}
 ${manifestChapters}
   </manifest>
 
   <spine toc="ncx">
 ${coverSpine}
-    <itemref idref="title-page"/>
+    <itemref idref="synopsis"/>
     <itemref idref="nav"/>
 ${spineItems}
   </spine>
 
   <guide>
-    ${hasCover ? '<reference type="cover"      title="Cover"              href="cover.xhtml"/>' : ''}
-    <reference type="title-page" title="Title Page"         href="title.xhtml"/>
+    ${hasCover ? '<reference type="cover"      title="Cover"              href="cover.xhtml"/>\n    <reference type="title-page" title="Title Page"          href="cover.xhtml"/>' : ''}
+    <reference type="other.synopsis" title="Synopsis"          href="synopsis.xhtml"/>
     <reference type="toc"        title="Table of Contents"  href="nav.xhtml"/>
     <reference type="text"       title="Start of Content"   href="chapters/chapter-1.xhtml"/>
   </guide>
@@ -132,10 +156,13 @@ ${spineItems}
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/nav.xhtml  (EPUB 3 navigation document)
 // ─────────────────────────────────────────────────────────────────────────────
-export function navXhtml(meta: NovelMetadata, chapters: Chapter[]): string {
+export function navXhtml(meta: NovelMetadata, chapters: Chapter[], hasCover: boolean): string {
   const items = chapters.map((ch) =>
     `      <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
   ).join('\n');
+
+  const coverItem = hasCover
+    ? `      <li><a href="cover.xhtml">Title Page</a></li>\n` : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -151,7 +178,7 @@ export function navXhtml(meta: NovelMetadata, chapters: Chapter[]): string {
   <nav epub:type="toc" id="toc">
     <h1>Table of Contents</h1>
     <ol>
-      <li><a href="title.xhtml">Title Page</a></li>
+${coverItem}      <li><a href="synopsis.xhtml">Synopsis</a></li>
 ${items}
     </ol>
   </nav>
@@ -168,9 +195,25 @@ ${items}
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/toc.ncx  (EPUB 2 compatibility)
 // ─────────────────────────────────────────────────────────────────────────────
-export function tocNcx(meta: NovelMetadata, chapters: Chapter[], bookId: string): string {
+export function tocNcx(meta: NovelMetadata, chapters: Chapter[], bookId: string, hasCover: boolean): string {
+  // playOrder: [cover (if present) →] synopsis → chapters
+  let playOrder = 1;
+
+  const coverNavPoint = hasCover ? `
+    <navPoint id="np-cover" playOrder="${playOrder++}">
+      <navLabel><text>Title Page</text></navLabel>
+      <content src="cover.xhtml"/>
+    </navPoint>` : '';
+
+  const synopsisNavPoint = `
+    <navPoint id="np-synopsis" playOrder="${playOrder++}">
+      <navLabel><text>Synopsis</text></navLabel>
+      <content src="synopsis.xhtml"/>
+    </navPoint>`;
+
+  const chapterStart = playOrder;
   const navPoints = chapters.map((ch, i) => `
-  <navPoint id="np-${ch.index}" playOrder="${i + 2}">
+  <navPoint id="np-${ch.index}" playOrder="${chapterStart + i}">
     <navLabel><text>${escXml(ch.title)}</text></navLabel>
     <content src="chapters/chapter-${ch.index}.xhtml"/>
   </navPoint>`).join('');
@@ -187,22 +230,23 @@ export function tocNcx(meta: NovelMetadata, chapters: Chapter[], bookId: string)
   </head>
   <docTitle><text>${escXml(meta.title)}</text></docTitle>
   <docAuthor><text>${escXml(meta.author)}</text></docAuthor>
-  <navMap>
-    <navPoint id="np-0" playOrder="1">
-      <navLabel><text>Title Page</text></navLabel>
-      <content src="title.xhtml"/>
-    </navPoint>
+  <navMap>${coverNavPoint}${synopsisNavPoint}
 ${navPoints}
   </navMap>
 </ncx>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OEBPS/title.xhtml
+// OEBPS/synopsis.xhtml
+//
+//  Formerly "title.xhtml" — the cover now serves as the book's title page
+//  (see coverXhtml below), so this page is declared purely as the synopsis
+//  page in content.opf / nav.xhtml / toc.ncx. It still carries the title /
+//  author / publisher line along with the synopsis text itself.
 // ─────────────────────────────────────────────────────────────────────────────
-export function titleXhtml(meta: NovelMetadata): string {
+export function synopsisXhtml(meta: NovelMetadata): string {
 const synopsis = meta.synopsis
-    ? `\n  <div class="synopsis">\n    ${synopsisXhtml(meta.synopsis)}\n  </div>` : '';
+    ? `\n  <div class="synopsis">\n    ${synopsisParagraphsXhtml(meta.synopsis)}\n  </div>` : '';
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -224,6 +268,10 @@ const synopsis = meta.synopsis
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/cover.xhtml
+//
+//  Now doubles as the book's title page (properties="calibre:title-page" in
+//  content.opf) — the novel title is rendered in an <h1> below the cover
+//  image.
 // ─────────────────────────────────────────────────────────────────────────────
 export function coverXhtml(meta: NovelMetadata): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -237,6 +285,7 @@ export function coverXhtml(meta: NovelMetadata): string {
 <body class="cover-page">
   <div class="cover-wrapper">
     <img class="cover-image" src="images/cover.jpg" alt="Cover of ${escXml(meta.title)}"/>
+    <h1 class="cover-title">${escXml(meta.title)}</h1>
   </div>
 </body>
 </html>`;
@@ -244,6 +293,11 @@ export function coverXhtml(meta: NovelMetadata): string {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/chapters/chapter-N.xhtml
+//
+//  Decorative markers:
+//    • A ".decorative-line" divider is inserted right after the chapter
+//      title (matches the class defined in styles/style.css).
+//    • An ".ending-line" divider caps off the chapter body.
 // ─────────────────────────────────────────────────────────────────────────────
 export function chapterXhtml(ch: Chapter, meta: NovelMetadata): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -256,147 +310,454 @@ export function chapterXhtml(ch: Chapter, meta: NovelMetadata): string {
 </head>
 <body>
   <h2 class="chapter-title">${escXml(ch.title)}</h2>
+  <div class="decorative-line">━━━━━✧✧✧✧━━━━━</div>
   <div class="chapter-body">
     ${toXhtml(ch.htmlContent)}
   </div>
+  <div class="ending-line">✦ ✧ ✦ ✧ ✦</div>
 </body>
 </html>`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/styles/style.css
+//
+//  Sourced from the user-supplied stylesheet (mattharrison/epub-css-starter-kit
+//  base), with font-face paths pointing at the embedded fonts under
+//  OEBPS/fonts/. `.decorative-line` / `.ending-line` and `.chapter-title`
+//  (h2) already carry the FoglihtenNo07 treatment this stylesheet defines.
 // ─────────────────────────────────────────────────────────────────────────────
 export function stylesheet(): string {
-  return `/* ─── WebNovel Scraper — EPUB Stylesheet ─────────────────────── */
-
-/* Reset */
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
+  return `/* credit: @mattharrison https://github.com/mattharrison/epub-css-starter-kit */
+/* Base Reset */
+html,
+body,
+div,
+span,
+applet,
+object,
+iframe,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+blockquote,
+pre,
+a,
+abbr,
+acronym,
+address,
+big,
+cite,
+code,
+del,
+dfn,
+em,
+img,
+ins,
+kbd,
+q,
+s,
+samp,
+small,
+strike,
+strong,
+sub,
+sup,
+tt,
+var,
+b,
+u,
+i,
+center,
+dl,
+dt,
+dd,
+fieldset,
+form,
+label,
+legend,
+table,
+caption,
+tbody,
+tfoot,
+thead,
+tr,
+th,
+td,
+article,
+aside,
+canvas,
+details,
+embed,
+figure,
+figcaption,
+footer,
+header,
+hgroup,
+menu,
+nav,
+output,
+ruby,
+section,
+summary,
+time,
+mark,
+audio,
+video {
+  /* Note kindle hates margin:0 ! (or margin-left or margin-top set) it inserts newlines galore */
+  margin-right: 0;
+  padding: 0;
+  border: 0;
+  font-size: 100%;
+  vertical-align: baseline;
+}
+/* Font Face Definitions */
+@font-face {
+  font-family: "FoglihtenNo07";
+  src: url(../fonts/FoglihtenNo07_Subset_Deep.ttf) format("truetype");
+  font-weight: 500;
+  font-style: normal;
+  font-stretch: normal;
+}
+/* Body Styles */
 body {
-  font-family    : Georgia, "Times New Roman", serif;
-  font-size      : 1em;
-  line-height    : 1.75;
-  color          : #1a1a1a;
-  padding        : 1.2em 1.6em;
-  max-width      : 100%;
+  font-size: 1em;
+  line-height: 1.5;
+  max-width: 100%;
+  margin: 0 auto;
+  font-family: "FoglihtenNo07", serif;
 }
-
-/* ── Cover page ─────────────────────────────────────────────────────────── */
-body.cover-page {
-  padding : 0;
-  margin  : 0;
+/* Media query for dark mode */
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #f0f0f0;
+    background-color: #121212;
+  }
+  .chapter-ender {
+    color: rgba(255, 255, 255, 0.5);
+  }
+  blockquote {
+    border-left: 4px solid #666;
+    color: #ccc;
+  }
+  i {
+    color: rgba(255, 255, 255, 0.7);
+  }
+  img {
+    border: 5px solid #444;
+  }
+  a {
+    color: #82b1ff;
+  }
+  .toc a {
+    color: #82b1ff;
+  }
+  code,
+  pre {
+    background-color: rgba(255, 255, 255, 0.1);
+  }
 }
-.cover-wrapper {
-  width  : 100%;
-  height : 100%;
-  text-align: center;
+/* Typography */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  hyphens: none !important;
+  -moz-hyphens: none !important;
+  -webkit-hyphens: none !important;
+  page-break-after: avoid;
+  page-break-inside: avoid;
+  text-indent: 0;
+  text-align: left;
+  font-family: Helvetica, Arial, sans-serif;
 }
-.cover-image {
-  max-width  : 100%;
-  max-height : 100%;
-  display    : block;
-  margin     : 0 auto;
-  object-fit : contain;
+h1 {
+  font-size: 1.4em !important;
+  text-align: center !important;
+  font-family: "FoglihtenNo07", serif;
 }
-
-/* ── Title page ─────────────────────────────────────────────────────────── */
-.title-page {
-  text-align  : center;
-  margin-top  : 15%;
-  padding     : 2em;
+h1:before {
+  content: "" !important;
+  display: block !important;
+  font-size: 14px !important;
+  letter-spacing: 5px !important;
+  margin: 10px auto !important;
+  width: 100% !important;
+  text-align: center !important;
 }
-.novel-title {
-  font-size     : 2.2em;
-  font-weight   : bold;
-  margin-bottom : 0.4em;
-  line-height   : 1.2;
+h2 {
+  font-size: 1.25em;
+  margin: 50px 0 0 0;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  text-align: center !important;
+  font-style: normal;
+  font-family: "FoglihtenNo07", serif;
 }
-.author {
-  font-size  : 1.2em;
-  color      : #555;
-  margin     : 0.5em 0;
-}
-.publisher {
-  font-size  : 0.85em;
-  color      : #999;
-  margin-top : 1.5em;
-}
-.synopsis {
-  margin     : 2em auto;
-  max-width  : 34em;
-  font-style : italic;
-  color      : #444;
-  border-left: 3px solid #ccc;
-  padding    : 0.8em 1.2em;
-  text-align : left;
-}
-
-/* ── Chapter ─────────────────────────────────────────────────────────────── */
-.chapter-title {
-  font-size     : 1.4em;
-  font-weight   : bold;
-  text-align    : center;
-  margin        : 0 0 1.6em;
-  padding-bottom: 0.5em;
-  border-bottom : 1px solid #ddd;
-}
-.chapter-body {
+p {
+  font-family: "Palatino", "Times New Roman", Caecilia, serif;
+  -webkit-hyphens: auto;
+  -moz-hyphens: auto;
+  hyphens: auto;
+  -webkit-hyphenate-limit-lines: 2;
+  line-height: 1.5em;
+  margin-bottom: 1em;
   text-align: justify;
+  text-indent: 1em;
+  orphans: 2;
+  widows: 2;
 }
-.chapter-body p {
-  margin      : 0 0 0.9em;
-  text-indent : 1.6em;
-}
-.chapter-body p:first-child,
-.chapter-body p.no-indent {
+p.first-para,
+p.first-para-chapter,
+p.note-p-first {
   text-indent: 0;
 }
-.chapter-body blockquote {
-  margin      : 1em 2.5em;
-  padding     : 0.4em 1em;
-  border-left : 3px solid #aaa;
-  font-style  : italic;
-  color       : #444;
+p.first-para-chapter::first-line {
+  /* handle run-in */
+  font-variant: small-caps;
 }
-.chapter-body hr {
-  border     : none;
-  border-top : 1px solid #ddd;
-  margin     : 1.5em auto;
-  width      : 60%;
+p + p {
+  text-indent: 1.5em;
 }
-.chapter-body pre,
-.chapter-body code {
-  font-family : "Courier New", Courier, monospace;
-  font-size   : 0.9em;
-  background  : #f5f5f5;
-  padding     : 0.2em 0.4em;
-  border-radius: 3px;
+/* No-hyphen elements */
+p.pseudo-title,
+p.preface-pseudo-title,
+p.pseudo-subtitle,
+div.toc-title {
+  -webkit-hyphens: none;
+  -moz-hyphens: none;
+  hyphens: none;
+  -adobe-hyphenate: none;
+  -epub-hyphens: none;
 }
-.chapter-body pre {
-  display   : block;
-  padding   : 1em;
+/* Special paragraph styles */
+p.preface-pseudo-title {
+  page-break-before: always !important;
+  break-before: page;
+  color: #594630;
+  margin: 0 0 1em 0;
+  text-indent: 0;
+  font-size: 2.5em;
+  text-align: center;
+}
+/* Links */
+a {
+  text-decoration: none;
+  color: inherit;
+}
+.toc a:hover {
+  text-decoration: underline;
+}
+/* Lists */
+ul {
+  list-style-type: circle;
+  font-family: serif;
+  padding-left: 2em;
+}
+ol {
+  list-style-type: circle;
+  font-family: serif;
+  padding-left: 2em;
+}
+nav > ul {
+  list-style-type: circle;
+  padding-left: 1em;
+  font-family: serif;
+}
+nav > ol {
+  padding-left: 1em;
+}
+/* Blockquotes */
+blockquote {
+  margin: 1em;
+  padding: 0.5em;
+  font-style: italic;
+  border-left: 3px solid #888;
+}
+/* Code and Preformatted Text */
+code,
+kbd,
+samp,
+tt {
+  font-family: "Courier New", Courier, monospace;
+  padding: 0.2em 0.4em;
+  border-radius: 0.3em;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+pre {
+  font-family: "Courier New", Courier, monospace;
+  padding: 1em;
+  white-space: pre-wrap;
+  margin: 1em 0;
   overflow-x: auto;
-  margin    : 1em 0;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+/* Superscript and Subscript */
+sup,
+sub {
+  font-size: 0.8em;
+  line-height: 0;
+  position: relative;
+  vertical-align: baseline;
+}
+sup {
+  top: -0.5em;
+}
+sub {
+  bottom: -0.25em;
+}
+/* Special Text Styles */
+i {
+  font-style: italic;
+  color: rgba(0, 0, 0, 0.7);
+}
+span.c13 {
+  font-size: 175%;
+  font-weight: bold;
+}
+span.c14 {
+  font-variant: small-caps;
+}
+/* Decorative Elements */
+.decorative-line {
+  text-align: center;
+  margin: 5px 0;
+  font-size: 1.1em;
+  font-weight: bold;
+  letter-spacing: 0;
+  margin-bottom: 1.5em;
+}
+.ending-line {
+  text-align: center;
+  margin: 5px 0;
+  font-size: 1.1em;
+  font-weight: bold;
+  letter-spacing: 0;
+  margin-top: 1.5em;
+}
+/* Images */
+img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 20px auto;
+  border: 5px solid #ccc;
+}
+.cover {
+  max-width: 100%;
+  height: auto;
+}
+/* Special Sections */
+.title h1 {
+  margin-bottom: 0;
+  margin-top: 1em;
+}
+div.div-literal-block-admonition {
+  margin-left: 1em;
+  background-color: #ccc;
+  padding: 1em;
+}
+div.note,
+div.tip,
+div.hint {
+  margin: 1em 0 1em 0 !important;
+  background-color: #ccc;
+  padding: 1em !important;
+  border-top: 0 solid #ccc;
+  border-bottom: 0 dashed #ccc;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+/* Cover and Title Pages */
+.cover-page {
+  margin: 0;
+  padding: 0;
+  text-align: center;
+  height: 100%;
+  width: 100%;
+}
+.cover-image {
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+}
+.cover-title {
+  font-size: 1.8em !important;
+  margin-top: 0.6em;
+  text-align: center;
+  font-family: "FoglihtenNo07", serif;
+}
+.title-page {
+  text-align: center;
+  margin: 3em 0;
+}
+.title-page h1 {
+  font-size: 2.5em;
+  margin-bottom: 0.5em;
+}
+.title-page .author {
+  font-size: 1.5em;
+  margin-bottom: 2em;
+}
+.synopsis {
+  margin: 2em 1em;
+  font-style: italic;
+  line-height: 1.6;
+  border-left: 3px solid #888;
+  padding-left: 1em;
 }
 
-/* ── Navigation (nav.xhtml) ──────────────────────────────────────────────── */
-nav[epub|type~="toc"] h1 {
-  font-size     : 1.5em;
-  margin-bottom : 1em;
+.volume-title {
+  position: absolute !important;
+  top: 50% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) !important;
+  font-size: 2rem !important;
+  text-align: center;
+  font-family: "Firlest", serif;
 }
-nav[epub|type~="toc"] ol {
-  list-style : none;
-  padding    : 0;
+
+.anno-drop {
+  display: none;
 }
-nav[epub|type~="toc"] li {
-  padding : 0.25em 0;
+
+.footnote-link {
+  text-decoration: none;
+  color: #0066cc;
+  vertical-align: super;
+  font-size: 0.8em;
 }
-nav[epub|type~="toc"] a {
-  text-decoration : none;
-  color           : #2a5db0;
-}
-nav[epub|type~="toc"] a:hover {
+.footnote-link:hover {
   text-decoration: underline;
+}
+.footnote-back-link {
+  text-decoration: none;
+  color: #0066cc;
+  margin-right: 5px;
+}
+.footnote-back-link:hover {
+  text-decoration: underline;
+}
+.footnotes-section {
+  margin-top: 2em;
+  border-top: 1px solid #ccc;
+  padding-top: 1em;
+}
+.footnote-item {
+  margin-bottom: 0.5em;
+  padding: 0.25em 0;
+}
+.footnote-ref {
+  font-weight: bold;
+}
+.footnote-title {
+  font-style: italic;
 }
 `;
 }

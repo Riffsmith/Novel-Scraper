@@ -4,6 +4,7 @@ import path         from 'path';
 import { v4 as uuid } from 'uuid';
 import type { Chapter, NovelMetadata } from '../types.js';
 import * as T       from './templates.js';
+import { foglihtenFontBuffer } from './assets.js';
 import logger       from '../logger/index.js';
 import { spinner }  from '../tui/display.js';
 
@@ -17,6 +18,13 @@ async function lazyGot() {
   return got!;
 }
 
+// ── Embedded font bytes, keyed by filename ─────────────────────────────────
+// Maps each T.EMBEDDED_FONTS entry's filename to its actual byte source.
+// Add an entry here whenever a new font is registered in T.EMBEDDED_FONTS.
+const FONT_SOURCES: Record<string, () => Buffer> = {
+  'FoglihtenNo07_Subset_Deep.ttf': foglihtenFontBuffer,
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  Build a standards-compliant EPUB 3 file.
 //
@@ -27,9 +35,10 @@ async function lazyGot() {
 //    OEBPS/nav.xhtml                   (EPUB 3 navigation)
 //    OEBPS/toc.ncx                     (EPUB 2 backward compat)
 //    OEBPS/styles/style.css
-//    OEBPS/title.xhtml
-//    OEBPS/cover.xhtml                 (if cover present)
+//    OEBPS/fonts/*.ttf                 (embedded fonts, e.g. chapter titles)
+//    OEBPS/cover.xhtml                 (title page, if cover present)
 //    OEBPS/images/cover.jpg            (if cover present)
+//    OEBPS/synopsis.xhtml              (title/author/publisher + synopsis)
 //    OEBPS/chapters/chapter-N.xhtml   (one per chapter)
 // ═══════════════════════════════════════════════════════════════════════════
 export async function buildEpub(
@@ -91,14 +100,24 @@ export async function buildEpub(
   archive.append(T.contentOpf(meta, chapters, hasCover, bookId), { name: 'OEBPS/content.opf' });
 
   // Navigation
-  archive.append(T.navXhtml(meta, chapters),           { name: 'OEBPS/nav.xhtml' });
-  archive.append(T.tocNcx(meta, chapters, bookId),     { name: 'OEBPS/toc.ncx' });
+  archive.append(T.navXhtml(meta, chapters, hasCover),         { name: 'OEBPS/nav.xhtml' });
+  archive.append(T.tocNcx(meta, chapters, bookId, hasCover),   { name: 'OEBPS/toc.ncx' });
 
   // Stylesheet
   archive.append(T.stylesheet(),                        { name: 'OEBPS/styles/style.css' });
 
-  // Title page
-  archive.append(T.titleXhtml(meta),                   { name: 'OEBPS/title.xhtml' });
+  // Embedded fonts (e.g. FoglihtenNo07 used for chapter titles/dividers)
+  for (const font of T.EMBEDDED_FONTS) {
+    const getBuf = FONT_SOURCES[font.filename];
+    if (!getBuf) {
+      logger.warn(`No font source registered for "${font.filename}" — skipping embed`);
+      continue;
+    }
+    archive.append(getBuf(), { name: `OEBPS/fonts/${font.filename}` });
+  }
+
+  // Synopsis page (cover.xhtml is now the title page — see below)
+  archive.append(T.synopsisXhtml(meta),                { name: 'OEBPS/synopsis.xhtml' });
 
   // Cover
   if (hasCover && coverBuf) {
