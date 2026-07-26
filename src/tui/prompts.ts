@@ -22,7 +22,7 @@ async function prompt<T extends Record<string, unknown>>(
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
-function validateUrl(val: string): boolean | string {
+export function validateUrl(val: string): boolean | string {
   try {
     new URL(val.trim());
     return true;

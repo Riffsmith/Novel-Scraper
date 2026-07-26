@@ -13,11 +13,13 @@ import {
   buildQuickAutoConfig,
   editChapterLinks,
 } from "./tui/prompts.js";
-import { manageCookies } from "./tui/cookieManager.js";
+import { manageCookies, selectCookieProfileForScrape } from "./tui/cookieManager.js";
+import { reportError, reportNotice } from "./tui/errors.js";
 import { manageSettings, promptSaveProfile } from "./tui/configManager.js";
 import {
   getBrowser,
   closeBrowser,
+  closeAllBrowsers,
   createStealthContext,
   createPage,
 } from "./scraper/browser.js";
@@ -25,7 +27,6 @@ import { scrapeTOC } from "./scraper/toc.js";
 import { collectLinksSequentially } from "./scraper/sequential.js";
 import { runScrapeQueue } from "./queue/index.js";
 import { buildEpub } from "./epub/builder.js";
-import { loadCookiesForDomain, COOKIE_FILE } from "./cookies/store.js";
 import { readConfig } from "./config/appConfig.js";
 import {
   loadProfile,
@@ -43,38 +44,6 @@ async function prompt<T extends Record<string, unknown>>(
   q: object,
 ): Promise<T> {
   return _prompt(q) as Promise<T>;
-}
-
-// ── Error / notice reporting that survives the next screen's console.clear() ──
-// disp.err()/disp.warn() alone get wiped almost instantly, because whatever
-// runs next calls mainMenu() → disp.banner() → console.clear(). These helpers
-// log to file AND block on an explicit keypress before continuing, so a
-// failure can never disappear before you've read it again.
-async function reportError(context: string, e: unknown): Promise<void> {
-  const err = e as Error;
-  logger.error(context, { error: err.message, stack: err.stack });
-
-  console.log("");
-  disp.err(`${context}: ${err.message}`);
-  if (err.stack) disp.dim(err.stack.split("\n").slice(1, 5).join("\n"));
-  console.log("");
-
-  await prompt<{ ack: string }>({
-    type: "input",
-    name: "ack",
-    message: chalk.dim("Press Enter to return to the main menu…"),
-  }).catch(() => {});
-}
-
-async function reportNotice(lines: string[]): Promise<void> {
-  console.log("");
-  lines.forEach((l) => disp.warn(l));
-  console.log("");
-  await prompt<{ ack: string }>({
-    type: "input",
-    name: "ack",
-    message: chalk.dim("Press Enter to continue…"),
-  }).catch(() => {});
 }
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
@@ -104,7 +73,10 @@ async function gracefulExit(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(chalk.yellow(`\n\n  [${reason}] Shutting down gracefully…`));
-  await closeBrowser().catch(() => {});
+  // closeAllBrowsers() closes the scraping singleton AND any still-open
+  // ephemeral (cookie-capture) browser, so Ctrl+C mid-login can't orphan a
+  // Chromium process.
+  await closeAllBrowsers().catch(() => {});
   process.exit(0);
 }
 
@@ -223,7 +195,7 @@ async function scrapeAndPackage(
     errors: errors.length,
   });
 
-  if (domain && isNewDomain && appCfg.askSaveProfile) {
+    if (domain && isNewDomain && appCfg.askSaveProfile) {
     const partial: Omit<
       SiteProfile,
       "domain" | "label" | "notes" | "savedAt" | "updatedAt"
@@ -322,21 +294,14 @@ async function startScrape(): Promise<void> {
 
   const startMs = Date.now();
 
-  // ── 3. Auto-load cookies for the domain ───────────────────────────────
+  // ── 3. Resolve which cookie profile to use for the domain ──────────────
+  // Zero profiles → nothing to do, zero prompts. One profile → auto-loaded,
+  // zero prompts. Two or more → asks which one (or "none"). All status
+  // messaging lives inside selectCookieProfileForScrape.
   let cookies: Cookie[] = [];
   if (domain) {
-    cookies = loadCookiesForDomain(domain);
-    if (cookies.length > 0) {
-      disp.success(
-        `Loaded ${chalk.cyan(String(cookies.length))} saved cookie(s) for ${chalk.cyan(domain)}`,
-      );
-      logger.info(`Auto-loaded ${cookies.length} cookie(s)`, {
-        domain,
-        source: COOKIE_FILE,
-      });
-    } else {
-      disp.dim(`No stored cookies for ${domain}`);
-    }
+    const selection = await selectCookieProfileForScrape(domain);
+    cookies = selection.cookies;
   }
 
   // ── 4. Launch browser ─────────────────────────────────────────────────
@@ -474,13 +439,12 @@ async function startAutoScrape(): Promise<void> {
   const domain = hostnameFrom(trimmedUrl);
   const profile = domain ? loadProfile(domain) : null;
   const isNewDomain = domain ? !hasProfile(domain) : false;
-  const cookies: Cookie[] = domain ? loadCookiesForDomain(domain) : [];
 
-  if (cookies.length > 0) {
-    disp.success(
-      `Loaded ${chalk.cyan(String(cookies.length))} saved cookie(s) for ${chalk.cyan(domain)}`,
-    );
-  }
+  // ── Resolve which cookie profile to use for the domain ───────────────
+  const selection = domain
+    ? await selectCookieProfileForScrape(domain)
+    : { profileName: null as string | null, cookies: [] as Cookie[] };
+  const cookies: Cookie[] = selection.cookies;
 
   const browser = await getBrowser({
     headless: appCfg.headless,
@@ -667,6 +631,6 @@ mainMenu().catch(async (e) => {
   logger.error("Fatal error", { error: e });
   disp.err(`Fatal: ${(e as Error).message}`);
   disp.dim("See logs/error.log for full details.");
-  await closeBrowser().catch(() => {});
+  await closeAllBrowsers().catch(() => {});
   process.exit(1);
 });

@@ -367,7 +367,7 @@ async function editGroup(
 
 // ── Pretty-print current AppConfig ────────────────────────────────────────────
 function printConfig(cfg: AppConfig): void {
-  const def = DEFAULT_CONFIG as Record<string, unknown>;
+  const def = DEFAULT_CONFIG as unknown as Record<string, unknown>;
   const cur = cfg as unknown as Record<string, unknown>;
 
   console.log("");

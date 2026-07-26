@@ -38,7 +38,7 @@ export interface BrowserLaunchOpts {
   locale: string;
 }
 
-// ── Singleton browser ─────────────────────────────────────────────────────────
+// ── Singleton browser (the main scraping-flow browser) ─────────────────────────
 let _browser: Browser | null = null;
 let _launchOpts: BrowserLaunchOpts | null = null;
 
@@ -86,6 +86,62 @@ export async function closeBrowser(): Promise<void> {
   }
 }
 
+// ── Ephemeral (isolated, headed) browser instances ────────────────────────────
+// Used for one-off manual login capture — NEVER the shared scraping
+// singleton, so a login session can't be silently reused by (or reuse) a
+// scraping run, and running one never forces a headless↔headed mismatch on
+// _browser. Tracked in a set so a Ctrl+C mid-login can't orphan a Chromium
+// process — see closeAllBrowsers() below.
+const _ephemeralBrowsers = new Set<Browser>();
+
+// Always headed (a human needs to see and use it). Every call must be paired
+// with exactly one closeEphemeralBrowser() — never call browser.close()
+// directly on an instance obtained this way.
+export async function launchEphemeralBrowser(
+  opts: BrowserLaunchOpts,
+): Promise<Browser> {
+  logger.info("Launching ephemeral CloakBrowser (isolated instance)…", {
+    headless: opts.headless,
+  });
+
+  const { launch } = await import("cloakbrowser");
+
+  const extraArgs: string[] = [];
+  if (opts.fingerprintSeed !== null) {
+    extraArgs.push(`--fingerprint=${opts.fingerprintSeed}`);
+  }
+
+  const browser = (await launch({
+    headless: opts.headless,
+    humanize: opts.humanize,
+    humanPreset: opts.humanPreset,
+    timezone: opts.timezone,
+    locale: opts.locale,
+    args: extraArgs,
+  })) as Browser;
+
+  _ephemeralBrowsers.add(browser);
+  return browser;
+}
+
+export async function closeEphemeralBrowser(browser: Browser): Promise<void> {
+  try {
+    await browser.close();
+  } catch {
+    /* already closed, or failed — don't block cleanup either way */
+  } finally {
+    _ephemeralBrowsers.delete(browser);
+  }
+}
+
+// Closes the scraping singleton AND every still-open ephemeral browser. Wired
+// into index.ts's gracefulExit() so Ctrl+C during a login-capture session can
+// never leave an orphaned Chromium process behind.
+export async function closeAllBrowsers(): Promise<void> {
+  await closeBrowser();
+  await Promise.all([..._ephemeralBrowsers].map(closeEphemeralBrowser));
+}
+
 // ── Context factory ───────────────────────────────────────────────────────────
 // CloakBrowser has already patched the binary-level fingerprint via launch().
 // Here we handle the network/session layer only:
@@ -95,11 +151,18 @@ export async function closeBrowser(): Promise<void> {
 //
 // We intentionally do NOT set userAgent, viewport, or addInitScript — those
 // would conflict with CloakBrowser's coherent fingerprint profile.
+//
+// localeOverride: an ephemeral (login-capture) browser is not the singleton
+// that populates _launchOpts, so its locale would silently fall back to
+// en-US without this — explicit override, checked before the singleton
+// fallback. Every existing call site (toc.ts, sequential.ts, queue/index.ts,
+// index.ts) omits it and is unaffected.
 export async function createStealthContext(
   browser: Browser,
   cookies?: Cookie[],
+  localeOverride?: string,
 ): Promise<BrowserContext> {
-  const locale = _launchOpts?.locale ?? "en-US";
+  const locale = localeOverride ?? _launchOpts?.locale ?? "en-US";
 
   const context = await browser.newContext({
     // locale/timezoneId are already baked into the binary via launch() flags.

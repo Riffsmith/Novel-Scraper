@@ -8,22 +8,22 @@ Playwright-powered, stealth-layered, concurrency-controlled scraper with a clean
 
 ## Features
 
-| Capability | Details |
-|---|---|
-| **Two scraping modes** | TOC URL auto-discovery *or* sequential next-button navigation |
-| **Three locator kinds** | CSS selector, XPath expression, or Regex text match for next-button |
-| **Fallback locator chain** | Priority-ordered list; fallback fires only when every higher locator fails |
-| **Full stealth** | `playwright-extra` + stealth plugin — webdriver flag, canvas noise, plugin spoofing, permissions |
-| **Resource blocking** | Ads, trackers, fonts, media blocked at network layer |
-| **Concurrency queue** | `p-queue` — N parallel browser pages with exponential-backoff retry |
-| **Human-like delays** | Configurable jitter range between every request |
-| **Smart extraction** | Cheerio + `sanitize-html`; CSS and XPath selectors everywhere |
-| **EPUB 3 output** | Nav document, NCX (EPUB 2 compat), OPF, per-chapter XHTML, CSS, cover, title page |
-| **Cookie store** | Per-domain persistent cookies in XDG_DATA_HOME — paste a `Cookie:` header once, reuse forever |
-| **Site profiles** | Per-domain extraction presets saved after first scrape — selectors pre-fill on return visits |
-| **Global config** | XDG_CONFIG_HOME/webnovel-scraper/config.json — fully documented, editable in-app or by hand |
-| **TUI** | `enquirer` prompts, `ora` spinners, `cli-progress` bars, `chalk` colour |
-| **Logging** | `winston` — pretty console + rotating file transports, level controlled from settings |
+| Capability                 | Details                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------ |
+| **Two scraping modes**     | TOC URL auto-discovery _or_ sequential next-button navigation                                    |
+| **Three locator kinds**    | CSS selector, XPath expression, or Regex text match for next-button                              |
+| **Fallback locator chain** | Priority-ordered list; fallback fires only when every higher locator fails                       |
+| **Full stealth**           | `playwright-extra` + stealth plugin — webdriver flag, canvas noise, plugin spoofing, permissions |
+| **Resource blocking**      | Ads, trackers, fonts, media blocked at network layer                                             |
+| **Concurrency queue**      | `p-queue` — N parallel browser pages with exponential-backoff retry                              |
+| **Human-like delays**      | Configurable jitter range between every request                                                  |
+| **Smart extraction**       | Cheerio + `sanitize-html`; CSS and XPath selectors everywhere                                    |
+| **EPUB 3 output**          | Nav document, NCX (EPUB 2 compat), OPF, per-chapter XHTML, CSS, cover, title page                |
+| **Cookie store**           | Per-domain persistent cookies in XDG_DATA_HOME — paste a `Cookie:` header once, reuse forever    |
+| **Site profiles**          | Per-domain extraction presets saved after first scrape — selectors pre-fill on return visits     |
+| **Global config**          | XDG_CONFIG_HOME/webnovel-scraper/config.json — fully documented, editable in-app or by hand      |
+| **TUI**                    | `enquirer` prompts, `ora` spinners, `cli-progress` bars, `chalk` colour                          |
+| **Logging**                | `winston` — pretty console + rotating file transports, level controlled from settings            |
 
 ---
 
@@ -80,9 +80,11 @@ wnscrape
 ## Scraping Modes
 
 ### TOC URL
+
 Point the scraper at the novel's chapter-list page. It loads the page (following TOC pagination if present), extracts and filters all same-origin chapter links, then lets you review/edit the list before scraping.
 
 ### Sequential navigation
+
 Provide the first and last chapter URLs plus a locator for the "Next Chapter" button. The scraper walks the chain collecting URLs, then scrapes in parallel.
 
 ---
@@ -92,7 +94,9 @@ Provide the first and last chapter URLs plus a locator for the "Next Chapter" bu
 All three kinds are available for the primary locator and any fallbacks.
 
 ### CSS selector
+
 Standard CSS. The most reliable option when the button has a unique class or `rel` attribute.
+
 ```
 .btn-next
 a[rel="next"]
@@ -101,15 +105,19 @@ p.navigation > a:last-child
 ```
 
 ### XPath expression
+
 Use when there is no good CSS hook but the DOM structure is predictable.
+
 ```
 //a[contains(@class,"next")]
 //p[@class="has-text-align-center"]/a[last()]
 //a[@title and contains(@title,"Next")]
 ```
+
 Enter with or without the `xpath=` prefix — both are accepted.
 
 ### Regex text match
+
 Scans every `<a href>` on the page and matches against the element's **visible decoded text** and **title attribute**. Use when the button has no stable class/id but always has the same label.
 
 ```
@@ -119,11 +127,12 @@ Next\s*Chapter            matches "Next Chapter", "NextChapter", etc.
 下一章                    CJK — use flag: u or iu
 ```
 
-> **Important:** The regex tests `a.textContent` (decoded, normalised), not HTML source. Do not write `&gt;&gt;` or `<a href=...>` patterns — write what you would *see* in the browser.
+> **Important:** The regex tests `a.textContent` (decoded, normalised), not HTML source. Do not write `&gt;&gt;` or `<a href=...>` patterns — write what you would _see_ in the browser.
 
 Recommended flags: `i` for Latin text (default), `u` for Unicode/CJK, `iu` for both.
 
 ### Fallback chain
+
 After entering the primary locator you can add fallbacks. On each page the engine tries them in order; the first match wins. A warning is logged whenever index > 0 fires, so you can audit which chapters used a different layout.
 
 ---
@@ -143,17 +152,34 @@ XPath: xpath=//article/div[1]
 
 ## Cookie Manager
 
-Reach via main menu → **🍪 Manage saved cookies**.
+Reach via main menu → **Manage saved cookies**.
 
-Cookies are stored in `$XDG_DATA_HOME/webnovel-scraper/cookies.json` (Linux), `~/Library/Application Support/webnovel-scraper/cookies.json` (macOS), or `%APPDATA%\webnovel-scraper\cookies.json` (Windows).
+Cookies are stored as **named profiles per domain** in `$XDG_DATA_HOME/webnovel-scraper/cookies.json` (Linux), `~/Library/Application Support/webnovel-scraper/cookies.json` (macOS), or `%APPDATA%\webnovel-scraper\cookies.json` (Windows). A domain can have multiple profiles — e.g. `default` and `alt-account` — each with its own independent cookie jar. Profiles are scoped strictly per-domain: a profile named `main` on one site has nothing to do with a profile named `main` on another.
 
-**Adding cookies — easiest method:**
-1. Log in to the novel site in your browser
-2. Open DevTools → Network → any request → Headers → copy the `Cookie:` value
-3. In the Cookie Manager, select the domain → "Paste raw Cookie: header"
-4. Done — cookies are injected into every browser context automatically
+**Two ways to populate a profile:**
 
-Cookies are loaded per-domain: if the entry URL is `www.webnovel.com`, the store key `webnovel.com` is matched automatically.
+1. **Log in via browser (recommended)** — an isolated, headed browser window opens. Log in as you normally would with your mouse and keyboard, then press Enter in the terminal to capture every cookie from that session. This **replaces** the profile's full cookie set — a fresh login is authoritative.
+2. **Manual entry** — paste a raw `Cookie:` header, or type name/value pairs by hand. This **merges** into the profile's existing cookies by name, same as before.
+
+**Adding cookies via browser login:**
+
+1. Cookie Manager → select or add a domain → **Add a new cookie profile** (or open an existing profile and choose the capture option)
+2. Enter the page you want to open first (defaults to the domain's homepage)
+3. Log in normally in the window that opens
+4. Press Enter in the terminal — the session's cookies are captured and previewed before saving
+
+**Adding cookies manually (unchanged from before):**
+
+1. Cookie Manager → select a domain → select or create a profile → **Paste raw Cookie: header** or **Add or update a cookie**
+2. Paste the value of the `Cookie:` request header (DevTools → Network → any request → Headers → Cookie), or enter name/value pairs one at a time
+
+**Profile selection at scrape time:**
+
+- Zero profiles for the domain → scrape proceeds with no cookies, same as always
+- Exactly one profile → auto-loaded, no extra prompt
+- Multiple profiles → you're asked which one to use (or to proceed with none), with cookie count and last-used date shown for each
+
+Profile names are restricted to lowercase letters, numbers, `_`, and `-`.
 
 ---
 
@@ -162,6 +188,7 @@ Cookies are loaded per-domain: if the entry URL is `www.webnovel.com`, the store
 After successfully scraping a domain for the first time, the scraper asks whether to save the extraction settings as a reusable profile (controlled by `askSaveProfile` in global settings).
 
 On return visits, the profile pre-fills:
+
 - Scraping method
 - Content selector, title toggle, title selector, exclusion selectors
 - Next-button locators (shown with use/override choice)
@@ -180,23 +207,24 @@ File: `$XDG_CONFIG_HOME/webnovel-scraper/config.json`
 
 Created automatically on first run with all defaults. Edit in-app via **⚙ Settings → 🌐 Global Settings** or open the JSON file directly. Unknown keys are preserved across in-app writes.
 
-| Setting | Default | Description |
-|---|---|---|
-| `defaultOutputDir` | `./output` | Where EPUBs are saved |
-| `defaultConcurrency` | `2` | Parallel browser pages (1–5) |
-| `defaultDelayMin` | `1200` | Min request jitter (ms) |
-| `defaultDelayMax` | `3500` | Max request jitter (ms) |
-| `headless` | `true` | `false` = visible browser window |
-| `waitUntil` | `domcontentloaded` | Navigation event to wait for (`domcontentloaded` / `load` / `networkidle`) |
-| `navigationTimeoutMs` | `30000` | Page load timeout (ms) |
-| `maxRetries` | `3` | Failed chapter retries before drop |
-| `defaultLanguage` | `en` | ISO 639-1 code pre-filled in metadata |
-| `defaultAuthor` | `Unknown` | Author pre-filled in metadata |
-| `defaultPublisher` | `WebNovel Scraper` | Publisher pre-filled in metadata |
-| `logLevel` | `info` | Console log level (`error`/`warn`/`info`/`debug`) |
-| `askSaveProfile` | `true` | Offer to save a site profile after first scrape |
+| Setting               | Default            | Description                                                                |
+| --------------------- | ------------------ | -------------------------------------------------------------------------- |
+| `defaultOutputDir`    | `./output`         | Where EPUBs are saved                                                      |
+| `defaultConcurrency`  | `2`                | Parallel browser pages (1–5)                                               |
+| `defaultDelayMin`     | `1200`             | Min request jitter (ms)                                                    |
+| `defaultDelayMax`     | `3500`             | Max request jitter (ms)                                                    |
+| `headless`            | `true`             | `false` = visible browser window                                           |
+| `waitUntil`           | `domcontentloaded` | Navigation event to wait for (`domcontentloaded` / `load` / `networkidle`) |
+| `navigationTimeoutMs` | `30000`            | Page load timeout (ms)                                                     |
+| `maxRetries`          | `3`                | Failed chapter retries before drop                                         |
+| `defaultLanguage`     | `en`               | ISO 639-1 code pre-filled in metadata                                      |
+| `defaultAuthor`       | `Unknown`          | Author pre-filled in metadata                                              |
+| `defaultPublisher`    | `WebNovel Scraper` | Publisher pre-filled in metadata                                           |
+| `logLevel`            | `info`             | Console log level (`error`/`warn`/`info`/`debug`)                          |
+| `askSaveProfile`      | `true`             | Offer to save a site profile after first scrape                            |
 
 `waitUntil` values:
+
 - `domcontentloaded` — fastest, sufficient for most static/SSR sites
 - `load` — waits for all sub-resources (images, fonts)
 - `networkidle` — waits until no network activity for 500 ms; use for heavy SPA/React sites
@@ -227,17 +255,17 @@ Compatible with: Readest, Calibre, Apple Books, KOReader, Moon+ Reader, Thorium,
 
 ## Stealth Stack
 
-| Layer | Detail |
-|---|---|
-| `puppeteer-extra-plugin-stealth` | webdriver flag, plugin list, permissions, iframe checks |
-| Canvas noise | Subtle pixel perturbation on `toDataURL` |
-| Real UA rotation | Current Chrome / Firefox / Safari / Edge user-agents |
-| Viewport rotation | Common desktop resolutions |
-| Locale + timezone | `en-US` / `America/New_York` |
-| Resource blocking | Media, fonts, analytics, ad networks aborted at context level |
-| `sec-ch-ua` headers | Matched to spoofed UA |
-| Request jitter | Configurable random delay per task |
-| Concurrency cap | Max 5 parallel pages (default 2) |
+| Layer                            | Detail                                                        |
+| -------------------------------- | ------------------------------------------------------------- |
+| `puppeteer-extra-plugin-stealth` | webdriver flag, plugin list, permissions, iframe checks       |
+| Canvas noise                     | Subtle pixel perturbation on `toDataURL`                      |
+| Real UA rotation                 | Current Chrome / Firefox / Safari / Edge user-agents          |
+| Viewport rotation                | Common desktop resolutions                                    |
+| Locale + timezone                | `en-US` / `America/New_York`                                  |
+| Resource blocking                | Media, fonts, analytics, ad networks aborted at context level |
+| `sec-ch-ua` headers              | Matched to spoofed UA                                         |
+| Request jitter                   | Configurable random delay per task                            |
+| Concurrency cap                  | Max 5 parallel pages (default 2)                              |
 
 ---
 
@@ -245,11 +273,11 @@ Compatible with: Readest, Calibre, Apple Books, KOReader, Moon+ Reader, Thorium,
 
 All runs write to `./logs/`:
 
-| File | Content |
-|---|---|
-| `combined.log` | Full JSON log (all levels) |
-| `error.log` | Errors only |
-| `exceptions.log` | Uncaught exceptions |
+| File             | Content                      |
+| ---------------- | ---------------------------- |
+| `combined.log`   | Full JSON log (all levels)   |
+| `error.log`      | Errors only                  |
+| `exceptions.log` | Uncaught exceptions          |
 | `rejections.log` | Unhandled promise rejections |
 
 ---
