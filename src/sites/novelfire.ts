@@ -37,19 +37,31 @@ function tocPageUrl(novelUrl: string, page: number): string {
 async function extractParagraphText(
   page: Page,
   selector: string,
+  excludeSelectors: string[] = [],
 ): Promise<string> {
-  const raw = await page
-    .locator(selector)
-    .first()
-    .innerText({ timeout: 8_000 })
-    .catch(() => null);
+  const container = page.locator(selector).first();
+
+  // Strip out nested "noise" elements (e.g. the "show full synopsis" toggle
+  // button living in a nested div.expand) before reading innerText, so its
+  // label text doesn't leak into the scraped description.
+  if (excludeSelectors.length > 0) {
+    await container
+      .evaluate((el, sels: string[]) => {
+        sels.forEach((s) => el.querySelectorAll(s).forEach((n) => n.remove()));
+      }, excludeSelectors)
+      .catch(() => {
+        /* best-effort — fall through to raw text if this fails */
+      });
+  }
+
+  const raw = await container.innerText({ timeout: 8_000 }).catch(() => null);
   if (!raw) return "";
 
   return raw
     .split("\n")
     .map((line) => line.trim())
     .join("\n")
-    .replace(/\n{3,}/g, "\n\n") // collapse anything bigger than one blank line
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -95,7 +107,9 @@ async function scrapeMetadata(
       })
       .catch(() => "")) || "Unknown";
 
-  const description = await extractParagraphText(page, ".content");
+  const description = await extractParagraphText(page, ".content", [
+    "div.expand",
+  ]);
 
   let coverUrl: string | undefined;
   const coverEl = page.locator(".cover > img:nth-child(1)").first();

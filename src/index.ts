@@ -3,29 +3,45 @@
 //  WebNovel Scraper  —  main entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
-import chalk from 'chalk';
-import type { Browser, Cookie } from 'playwright';
-import logger from './logger/index.js';
-import * as disp from './tui/display.js';
-import { gatherConfig, gatherAutoConfig, editChapterLinks } from './tui/prompts.js';
-import { manageCookies } from './tui/cookieManager.js';
-import { manageSettings, promptSaveProfile } from './tui/configManager.js';
-import { getBrowser, closeBrowser, createStealthContext, createPage } from './scraper/browser.js';
-import { scrapeTOC } from './scraper/toc.js';
-import { collectLinksSequentially } from './scraper/sequential.js';
-import { runScrapeQueue } from './queue/index.js';
-import { buildEpub } from './epub/builder.js';
-import { loadCookiesForDomain, COOKIE_FILE } from './cookies/store.js';
-import { readConfig } from './config/appConfig.js';
-import { loadProfile, hasProfile, normaliseDomain } from './config/siteProfiles.js';
-import { SITE_ADAPTERS, findSiteAdapter } from './sites/index.js';
-import type { AutoScrapeResult } from './sites/types.js';
-import type { AppConfig, ScraperConfig, SiteProfile } from './types.js';
+import chalk from "chalk";
+import type { Browser, Cookie } from "playwright";
+import logger from "./logger/index.js";
+import * as disp from "./tui/display.js";
+import {
+  gatherConfig,
+  gatherAutoConfig,
+  buildQuickAutoConfig,
+  editChapterLinks,
+} from "./tui/prompts.js";
+import { manageCookies } from "./tui/cookieManager.js";
+import { manageSettings, promptSaveProfile } from "./tui/configManager.js";
+import {
+  getBrowser,
+  closeBrowser,
+  createStealthContext,
+  createPage,
+} from "./scraper/browser.js";
+import { scrapeTOC } from "./scraper/toc.js";
+import { collectLinksSequentially } from "./scraper/sequential.js";
+import { runScrapeQueue } from "./queue/index.js";
+import { buildEpub } from "./epub/builder.js";
+import { loadCookiesForDomain, COOKIE_FILE } from "./cookies/store.js";
+import { readConfig } from "./config/appConfig.js";
+import {
+  loadProfile,
+  hasProfile,
+  normaliseDomain,
+} from "./config/siteProfiles.js";
+import { SITE_ADAPTERS, findSiteAdapter } from "./sites/index.js";
+import type { AutoScrapeResult } from "./sites/types.js";
+import type { AppConfig, ScraperConfig, SiteProfile } from "./types.js";
 
-import { createRequire } from 'module';
+import { createRequire } from "module";
 const require = createRequire(import.meta.url);
-const { prompt: _prompt } = require('enquirer');
-async function prompt<T extends Record<string, unknown>>(q: object): Promise<T> {
+const { prompt: _prompt } = require("enquirer");
+async function prompt<T extends Record<string, unknown>>(
+  q: object,
+): Promise<T> {
   return _prompt(q) as Promise<T>;
 }
 
@@ -38,47 +54,49 @@ async function reportError(context: string, e: unknown): Promise<void> {
   const err = e as Error;
   logger.error(context, { error: err.message, stack: err.stack });
 
-  console.log('');
+  console.log("");
   disp.err(`${context}: ${err.message}`);
-  if (err.stack) disp.dim(err.stack.split('\n').slice(1, 5).join('\n'));
-  console.log('');
+  if (err.stack) disp.dim(err.stack.split("\n").slice(1, 5).join("\n"));
+  console.log("");
 
   await prompt<{ ack: string }>({
-    type   : 'input',
-    name   : 'ack',
-    message: chalk.dim('Press Enter to return to the main menu…'),
+    type: "input",
+    name: "ack",
+    message: chalk.dim("Press Enter to return to the main menu…"),
   }).catch(() => {});
 }
 
 async function reportNotice(lines: string[]): Promise<void> {
-  console.log('');
-  lines.forEach(l => disp.warn(l));
-  console.log('');
+  console.log("");
+  lines.forEach((l) => disp.warn(l));
+  console.log("");
   await prompt<{ ack: string }>({
-    type   : 'input',
-    name   : 'ack',
-    message: chalk.dim('Press Enter to continue…'),
+    type: "input",
+    name: "ack",
+    message: chalk.dim("Press Enter to continue…"),
   }).catch(() => {});
 }
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
-process.on('SIGINT',  () => gracefulExit('SIGINT'));
-process.on('unhandledRejection', (reason) => {
+process.on("SIGINT", () => gracefulExit("SIGINT"));
+process.on("unhandledRejection", (reason) => {
   const err = reason as NodeJS.ErrnoException;
-  if (err?.code === 'ERR_USE_AFTER_CLOSE') {
+  if (err?.code === "ERR_USE_AFTER_CLOSE") {
     // Known enquirer + newer-Node readline race: a stray keystroke fired
     // after a prompt's readline interface had already closed. Harmless —
     // just means one keypress got dropped. Log it quietly and move on
     // instead of letting it derail the current screen.
-    logger.debug('Ignored benign ERR_USE_AFTER_CLOSE from enquirer readline race');
+    logger.debug(
+      "Ignored benign ERR_USE_AFTER_CLOSE from enquirer readline race",
+    );
     return;
   }
-  logger.error('Unhandled rejection', { error: err });
+  logger.error("Unhandled rejection", { error: err });
 });
-process.on('SIGTERM', () => gracefulExit('SIGTERM'));
-process.on('uncaughtException', (e: Error) => {
-  logger.error('Uncaught exception', { error: e });
-  gracefulExit('uncaughtException');
+process.on("SIGTERM", () => gracefulExit("SIGTERM"));
+process.on("uncaughtException", (e: Error) => {
+  logger.error("Uncaught exception", { error: e });
+  gracefulExit("uncaughtException");
 });
 
 let shuttingDown = false;
@@ -91,8 +109,11 @@ async function gracefulExit(reason: string): Promise<void> {
 }
 
 function hostnameFrom(url: string): string {
-  try { return new URL(url).hostname.replace(/^www\./i, ''); }
-  catch { return ''; }
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "");
+  } catch {
+    return "";
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -102,34 +123,50 @@ async function mainMenu(): Promise<void> {
   disp.banner();
 
   const { action } = await prompt<{ action: string }>({
-    type   : 'select',
-    name   : 'action',
-    message: 'What would you like to do?',
+    type: "select",
+    name: "action",
+    message: "What would you like to do?",
     choices: [
-      { name: 'scrape',   message: '📖  Start a new scrape → EPUB' },
-      { name: 'cookies',  message: '🍪  Manage saved cookies' },
-      { name: 'settings', message: '⚙   Settings & site profiles' },
-      { name: 'quit',     message: chalk.dim('✖   Quit') },
+      { name: "scrape", message: "Start a new scrape and build an EPUB" },
+      { name: "cookies", message: "Manage saved cookies" },
+      { name: "settings", message: "Settings and site profiles" },
+      { name: "quit", message: chalk.dim("Quit") },
     ],
   });
 
-  if (action === 'quit')     { console.log(chalk.dim('\n  Goodbye!\n')); process.exit(0); }
-  if (action === 'cookies')  { await manageCookies();  return mainMenu(); }
-  if (action === 'settings') { await manageSettings(); return mainMenu(); }
+  if (action === "quit") {
+    console.log(chalk.dim("\n  Goodbye!\n"));
+    process.exit(0);
+  }
+  if (action === "cookies") {
+    await manageCookies();
+    return mainMenu();
+  }
+  if (action === "settings") {
+    await manageSettings();
+    return mainMenu();
+  }
 
   // ── Scrape sub-menu: auto vs manual ────────────────────────────────────
-  disp.section('📖  New Scrape');
+  disp.section("New Scrape");
   const { mode } = await prompt<{ mode: string }>({
-    type   : 'select',
-    name   : 'mode',
-    message: 'How do you want to set this scrape up?',
+    type: "select",
+    name: "mode",
+    message: "How do you want to set this scrape up?",
     choices: [
-      { name: 'auto',   message: '🤖  Auto     — paste a novel URL; metadata & chapters are fetched for you' },
-      { name: 'manual', message: '🛠   Manual   — configure everything yourself' },
+      {
+        name: "auto",
+        message:
+          "Auto — paste a novel URL; on a supported site this usually takes just two confirmations",
+      },
+      {
+        name: "manual",
+        message: "Manual — configure every selector and setting yourself",
+      },
     ],
   });
 
-  if (mode === 'auto') return startAutoScrape();
+  if (mode === "auto") return startAutoScrape();
   return startScrape();
 }
 
@@ -138,56 +175,77 @@ async function mainMenu(): Promise<void> {
 //  save a site profile. Used by both the manual and auto scrape flows.
 // ═══════════════════════════════════════════════════════════════════════════
 async function scrapeAndPackage(
-  browser     : Browser,
-  chapterUrls : string[],
-  config      : ScraperConfig,
-  cookies     : Cookie[],
-  appCfg      : AppConfig,
-  domain      : string,
-  isNewDomain : boolean,
-  startMs     : number,
+  browser: Browser,
+  chapterUrls: string[],
+  config: ScraperConfig,
+  cookies: Cookie[],
+  appCfg: AppConfig,
+  domain: string,
+  isNewDomain: boolean,
+  startMs: number,
 ): Promise<void> {
-  disp.section('⚡  Scraping Chapters');
+  disp.section("Scraping Chapters");
   const { chapters, errors } = await runScrapeQueue(
-    browser, chapterUrls, config, cookies.length ? cookies : undefined, appCfg,
+    browser,
+    chapterUrls,
+    config,
+    cookies.length ? cookies : undefined,
+    appCfg,
   );
 
   if (chapters.length === 0) {
-    disp.err('No chapters scraped successfully.');
-    disp.dim(`Check content selector: "${config.contentSelector}"`);
+    disp.err("No chapters were scraped successfully.");
+    disp.dim(
+      `Double-check the content selector — it did not match anything: "${config.contentSelector}"`,
+    );
     process.exit(1);
   }
   if (errors.length > 0) {
-    disp.warn(`${errors.length} chapter(s) failed:`);
-    errors.forEach(e => disp.dim(`  ${e.url}  →  ${e.error}`));
+    disp.warn(`${errors.length} chapter(s) could not be scraped:`);
+    errors.forEach((e) => disp.dim(`  ${e.url}  →  ${e.error}`));
   }
 
-  disp.section('📦  Building EPUB');
+  disp.section("Building EPUB");
   const outputPath = await buildEpub(
-    chapters, config.metadata, config.outputDir, config.outputFilename,
+    chapters,
+    config.metadata,
+    config.outputDir,
+    config.outputFilename,
   );
 
   const totalWords = chapters.reduce((s, ch) => s + ch.wordCount, 0);
   disp.summary({
-    title   : config.metadata.title,
+    title: config.metadata.title,
     chapters: chapters.length,
-    words   : totalWords,
-    timeMs  : Date.now() - startMs,
-    output  : outputPath,
-    errors  : errors.length,
+    words: totalWords,
+    timeMs: Date.now() - startMs,
+    output: outputPath,
+    errors: errors.length,
   });
 
   if (domain && isNewDomain && appCfg.askSaveProfile) {
-    const partial: Omit<SiteProfile, 'domain' | 'label' | 'notes' | 'savedAt' | 'updatedAt'> = {
-      method            : config.method,
-      contentSelector   : config.contentSelector,
-      separateTitle     : config.separateTitle,
-      titleSelector     : config.titleSelector,
-      excludeSelectors  : config.excludeSelectors,
+    const partial: Omit<
+      SiteProfile,
+      "domain" | "label" | "notes" | "savedAt" | "updatedAt"
+    > = {
+      method: config.method,
+      contentSelector: config.contentSelector,
+      separateTitle: config.separateTitle,
+      titleSelector: config.titleSelector,
+      excludeSelectors: config.excludeSelectors,
       nextButtonLocators: config.nextButtonLocators,
-      concurrency       : config.concurrency !== appCfg.defaultConcurrency ? config.concurrency : undefined,
-      delayMin          : config.delayMin    !== appCfg.defaultDelayMin    ? config.delayMin    : undefined,
-      delayMax          : config.delayMax    !== appCfg.defaultDelayMax    ? config.delayMax    : undefined,
+      concurrency:
+        config.concurrency !== appCfg.defaultConcurrency
+          ? config.concurrency
+          : undefined,
+      delayMin:
+        config.delayMin !== appCfg.defaultDelayMin
+          ? config.delayMin
+          : undefined,
+      delayMax:
+        config.delayMax !== appCfg.defaultDelayMax
+          ? config.delayMax
+          : undefined,
     };
     await promptSaveProfile(domain, partial);
   }
@@ -202,22 +260,30 @@ async function startScrape(): Promise<void> {
   logger.level = appCfg.logLevel;
 
   // ── 1. Ask for the entry URL upfront so we can look up the profile ────
-  disp.section('🌐  Entry URL');
-  disp.dim('Enter the URL you plan to scrape (TOC page or first chapter URL).');
-  disp.dim('This is used to look up any saved site profile for that domain.');
-  console.log('');
+  disp.section("Entry URL");
+  disp.dim(
+    "Enter the URL you plan to scrape — either the table-of-contents page or the first chapter.",
+  );
+  disp.dim(
+    "This URL is used to look up any saved site profile for the domain, so selectors and performance settings can be pre-filled.",
+  );
+  console.log("");
 
   const { entryUrl } = await prompt<{ entryUrl: string }>({
-    type    : 'input',
-    name    : 'entryUrl',
-    message : 'Entry URL:',
+    type: "input",
+    name: "entryUrl",
+    message: "Entry URL:",
     validate: (v: string) => {
-      try { new URL(v.trim()); return true; }
-      catch { return 'Please enter a valid URL (include https://)'; }
+      try {
+        new URL(v.trim());
+        return true;
+      } catch {
+        return "Please enter a valid URL (include https://)";
+      }
     },
   });
 
-  const domain  = hostnameFrom(entryUrl.trim());
+  const domain = hostnameFrom(entryUrl.trim());
   const profile = domain ? loadProfile(domain) : null;
   const isNewDomain = domain ? !hasProfile(domain) : false;
 
@@ -229,23 +295,29 @@ async function startScrape(): Promise<void> {
   let config;
   try {
     config = await gatherConfig(appCfg, profile);
-    if (config.method === 'toc' && !config.tocUrl) {
+    if (config.method === "toc" && !config.tocUrl) {
       config.tocUrl = entryUrl.trim();
-    } else if (config.method === 'sequential' && !config.firstChapterUrl) {
+    } else if (config.method === "sequential" && !config.firstChapterUrl) {
       config.firstChapterUrl = entryUrl.trim();
     }
   } catch (e: unknown) {
     const code = (e as NodeJS.ErrnoException).code;
-    const msg  = (e as Error).message ?? '';
-    if (code === 'ERR_USE_AFTER_CLOSE' || msg.includes('cancelled') || msg.includes('canceled')) {
-      console.log(chalk.yellow('\n  Cancelled — goodbye!\n'));
+    const msg = (e as Error).message ?? "";
+    if (
+      code === "ERR_USE_AFTER_CLOSE" ||
+      msg.includes("cancelled") ||
+      msg.includes("canceled")
+    ) {
+      console.log(chalk.yellow("\n  Cancelled — goodbye!\n"));
       process.exit(0);
     }
     throw e;
   }
 
-  logger.info('Configuration confirmed', {
-    method: config.method, title: config.metadata.title, domain,
+  logger.info("Configuration confirmed", {
+    method: config.method,
+    title: config.metadata.title,
+    domain,
   });
 
   const startMs = Date.now();
@@ -255,8 +327,13 @@ async function startScrape(): Promise<void> {
   if (domain) {
     cookies = loadCookiesForDomain(domain);
     if (cookies.length > 0) {
-      disp.success(`Loaded ${chalk.cyan(String(cookies.length))} cookie(s) for ${chalk.cyan(domain)}`);
-      logger.info(`Auto-loaded ${cookies.length} cookie(s)`, { domain, source: COOKIE_FILE });
+      disp.success(
+        `Loaded ${chalk.cyan(String(cookies.length))} saved cookie(s) for ${chalk.cyan(domain)}`,
+      );
+      logger.info(`Auto-loaded ${cookies.length} cookie(s)`, {
+        domain,
+        source: COOKIE_FILE,
+      });
     } else {
       disp.dim(`No stored cookies for ${domain}`);
     }
@@ -264,20 +341,20 @@ async function startScrape(): Promise<void> {
 
   // ── 4. Launch browser ─────────────────────────────────────────────────
   const browser = await getBrowser({
-    headless        : appCfg.headless,
-    humanize        : appCfg.humanize,
-    humanPreset     : appCfg.humanPreset,
-    fingerprintSeed : appCfg.fingerprintSeed,
-    timezone        : 'America/New_York',
-    locale          : appCfg.defaultLanguage === 'en' ? 'en-US' : appCfg.defaultLanguage,
+    headless: appCfg.headless,
+    humanize: appCfg.humanize,
+    humanPreset: appCfg.humanPreset,
+    fingerprintSeed: appCfg.fingerprintSeed,
+    timezone: "America/New_York",
+    locale: appCfg.defaultLanguage === "en" ? "en-US" : appCfg.defaultLanguage,
   });
 
   try {
     // ── 5. URL collection ────────────────────────────────────────────────
     let chapterUrls: string[] = [];
 
-    if (config.method === 'toc') {
-      disp.section('📋  Step 1 / 3 — Table of Contents');
+    if (config.method === "toc") {
+      disp.section("Step 1 of 3 — Table of Contents");
       chapterUrls = await scrapeTOC(
         browser,
         config.tocUrl!,
@@ -286,12 +363,14 @@ async function startScrape(): Promise<void> {
         appCfg.navigationTimeoutMs,
       );
       if (chapterUrls.length === 0) {
-        disp.err('No chapter links found on the TOC page.');
-        disp.dim('Tip: check the URL, or add session cookies via Cookie Manager.');
+        disp.err("No chapter links found on the TOC page.");
+        disp.dim(
+          "Tip: check the URL, or add session cookies via the Cookie Manager.",
+        );
         process.exit(1);
       }
     } else {
-      disp.section('🔗  Step 1 / 3 — Sequential URL Collection');
+      disp.section("Step 1 of 3 — Sequential URL Collection");
       chapterUrls = await collectLinksSequentially(
         browser,
         config.firstChapterUrl!,
@@ -304,7 +383,9 @@ async function startScrape(): Promise<void> {
         appCfg.navigationTimeoutMs,
       );
       if (chapterUrls.length === 0) {
-        disp.err('No URLs collected. Check your chapter URLs and next-button locator.');
+        disp.err(
+          "No URLs collected. Check your chapter URLs and next-button locator.",
+        );
         process.exit(1);
       }
     }
@@ -312,14 +393,24 @@ async function startScrape(): Promise<void> {
     // ── 6. Chapter list review ────────────────────────────────────────────
     chapterUrls = await editChapterLinks(chapterUrls);
     if (chapterUrls.length === 0) {
-      disp.warn('No chapters left — nothing to scrape.');
+      disp.warn("No chapters left — nothing to scrape.");
       process.exit(0);
     }
-    disp.success(`${chalk.cyan(String(chapterUrls.length))} chapters confirmed — starting scrape`);
+    disp.success(
+      `${chalk.cyan(String(chapterUrls.length))} chapters confirmed — starting scrape`,
+    );
 
     // ── 7. Scrape + package ────────────────────────────────────────────────
-    await scrapeAndPackage(browser, chapterUrls, config, cookies, appCfg, domain, isNewDomain, startMs);
-
+    await scrapeAndPackage(
+      browser,
+      chapterUrls,
+      config,
+      cookies,
+      appCfg,
+      domain,
+      isNewDomain,
+      startMs,
+    );
   } finally {
     await closeBrowser();
   }
@@ -327,86 +418,115 @@ async function startScrape(): Promise<void> {
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Auto scrape flow — driven by a SiteAdapter
+//
+//  Quality-of-life goal: on a supported site, a person should be able to
+//  paste a novel URL and reach a running scrape after exactly two
+//  confirmations:
+//    1. "Use these auto-detected settings and continue?"
+//    2. "Start scraping N chapters now?"
+//  Declining the first confirmation drops into the full customization
+//  wizard (chapter list review + gatherAutoConfig) for anyone who wants to
+//  change selectors, metadata, output location, or performance settings
+//  before running. That path ends with its own single confirmation, so it
+//  never asks fewer questions than the person actually wants to answer —
+//  it just isn't the default.
 // ═══════════════════════════════════════════════════════════════════════════
 async function startAutoScrape(): Promise<void> {
   const appCfg = readConfig();
   logger.level = appCfg.logLevel;
 
-  disp.section('🤖  Auto Scrape — Novel URL');
-  disp.dim('Paste the URL of the novel’s main page (not the chapter list).');
-  disp.dim(`Supported sites: ${SITE_ADAPTERS.map(a => a.label).join(', ')}`);
-  console.log('');
+  disp.section("Auto Scrape — Novel URL");
+  disp.dim("Paste the URL of the novel's main page (not the chapter list).");
+  disp.dim(`Supported sites: ${SITE_ADAPTERS.map((a) => a.label).join(", ")}`);
+  console.log("");
 
   const { novelUrl } = await prompt<{ novelUrl: string }>({
-    type    : 'input',
-    name    : 'novelUrl',
-    message : 'Novel URL:',
+    type: "input",
+    name: "novelUrl",
+    message: "Novel URL:",
     validate: (v: string) => {
-      try { new URL(v.trim()); return true; }
-      catch { return 'Please enter a valid URL (include https://)'; }
+      try {
+        new URL(v.trim());
+        return true;
+      } catch {
+        return "Please enter a valid URL (include https://)";
+      }
     },
   });
 
   const trimmedUrl = novelUrl.trim();
-  const adapter     = findSiteAdapter(trimmedUrl);
+  const adapter = findSiteAdapter(trimmedUrl);
 
   if (!adapter) {
-    disp.err('This site isn’t supported for auto-scraping yet.');
-    disp.dim(`Currently supported: ${SITE_ADAPTERS.map(a => a.label).join(', ')}`);
+    disp.err("This site is not supported for auto-scraping yet.");
+    disp.dim(
+      `Currently supported: ${SITE_ADAPTERS.map((a) => a.label).join(", ")}`,
+    );
     const { fallback } = await prompt<{ fallback: boolean }>({
-      type   : 'confirm',
-      name   : 'fallback',
-      message: 'Switch to manual setup instead?',
+      type: "confirm",
+      name: "fallback",
+      message: "Switch to manual setup instead?",
       initial: true,
     });
     return fallback ? startScrape() : mainMenu();
   }
 
-  const domain      = hostnameFrom(trimmedUrl);
-  const profile     = domain ? loadProfile(domain) : null;
+  const domain = hostnameFrom(trimmedUrl);
+  const profile = domain ? loadProfile(domain) : null;
   const isNewDomain = domain ? !hasProfile(domain) : false;
   const cookies: Cookie[] = domain ? loadCookiesForDomain(domain) : [];
 
   if (cookies.length > 0) {
-    disp.success(`Loaded ${chalk.cyan(String(cookies.length))} cookie(s) for ${chalk.cyan(domain)}`);
+    disp.success(
+      `Loaded ${chalk.cyan(String(cookies.length))} saved cookie(s) for ${chalk.cyan(domain)}`,
+    );
   }
 
   const browser = await getBrowser({
-    headless        : appCfg.headless,
-    humanize        : appCfg.humanize,
-    humanPreset     : appCfg.humanPreset,
-    fingerprintSeed : appCfg.fingerprintSeed,
-    timezone        : 'America/New_York',
-    locale          : appCfg.defaultLanguage === 'en' ? 'en-US' : appCfg.defaultLanguage,
+    headless: appCfg.headless,
+    humanize: appCfg.humanize,
+    humanPreset: appCfg.humanPreset,
+    fingerprintSeed: appCfg.fingerprintSeed,
+    timezone: "America/New_York",
+    locale: appCfg.defaultLanguage === "en" ? "en-US" : appCfg.defaultLanguage,
   });
 
   let auto: AutoScrapeResult;
 
   try {
-    const context = await createStealthContext(browser, cookies.length ? cookies : undefined);
-    const page    = await createPage(context);
+    const context = await createStealthContext(
+      browser,
+      cookies.length ? cookies : undefined,
+    );
+    const page = await createPage(context);
 
-    const spin1 = disp.spinner(`Fetching novel metadata from ${adapter.label}…`);
+    const spin1 = disp.spinner(
+      `Fetching novel metadata from ${adapter.label}…`,
+    );
     let metadata;
     try {
       metadata = await adapter.scrapeMetadata(page, trimmedUrl);
-      spin1.succeed(`Metadata fetched: "${metadata.title}" by ${metadata.author}`);
-      } catch (e) {
-      spin1.fail('Metadata fetch failed');
+      spin1.succeed(
+        `Metadata fetched: "${metadata.title}" by ${metadata.author}`,
+      );
+    } catch (e) {
+      spin1.fail("Metadata fetch failed");
       await context.close();
       throw e;
     }
 
-    const spin2 = disp.spinner('Collecting chapter links (walking through every TOC batch — can take a bit)…');
+    const spin2 = disp.spinner(
+      "Collecting chapter links (this can take a while on long novels)…",
+    );
     let chapterLinks: string[];
     try {
       chapterLinks = await adapter.scrapeChapterLinks(page, trimmedUrl, {
-        waitUntil   : appCfg.waitUntil,
+        waitUntil: appCfg.waitUntil,
         navTimeoutMs: appCfg.navigationTimeoutMs,
       });
       spin2.succeed(`Collected ${chapterLinks.length} chapter link(s)`);
     } catch (e) {
-      spin2.fail(`Chapter link collection failed`);
+      spin2.fail("Chapter link collection failed");
       await context.close();
       throw e;
     }
@@ -414,50 +534,129 @@ async function startAutoScrape(): Promise<void> {
     await context.close();
     auto = { siteId: adapter.id, novelUrl: trimmedUrl, metadata, chapterLinks };
   } catch (e) {
-    await reportError('Auto-scrape failed', e);
+    await reportError("Auto-scrape failed", e);
     await closeBrowser();
     return mainMenu();
   }
 
   if (auto.chapterLinks.length === 0) {
-    await reportNotice(['No chapter links were found — the page structure may have changed.']);
+    await reportNotice([
+      "No chapter links were found. The page structure on this site may have changed.",
+    ]);
     await closeBrowser();
     return mainMenu();
   }
 
-  // ── Review + edit the harvested chapter list ───────────────────────────
-  disp.section('📋  Review — Chapter List');
-  auto.chapterLinks = await editChapterLinks(auto.chapterLinks);
-  if (auto.chapterLinks.length === 0) {
-    await reportNotice(['No chapters left — nothing to scrape.']);
-    await closeBrowser();
-    return mainMenu();
-  }
+  // ── Scan summary + first confirmation ───────────────────────────────────
+  disp.section("Scan Complete");
+  disp.success(
+    `Detected "${auto.metadata.title}" by ${auto.metadata.author || "an unknown author"}`,
+  );
+  disp.info(
+    `Chapters found  : ${chalk.cyan(String(auto.chapterLinks.length))}`,
+  );
+  disp.dim(`  first: ${auto.chapterLinks[0]}`);
+  disp.dim(`  last : ${auto.chapterLinks[auto.chapterLinks.length - 1]}`);
+  disp.info(
+    `Content selector: ${chalk.cyan(profile?.contentSelector ?? adapter.defaultContentSelector)} ${profile ? chalk.dim("(from saved profile)") : chalk.dim("(site default)")}`,
+  );
+  disp.info(
+    `Cover image     : ${auto.metadata.coverUrl ? chalk.cyan("found automatically") : chalk.dim("none found")}`,
+  );
+  console.log("");
+  disp.dim(
+    "These settings were filled in automatically from the site and any saved profile for this domain.",
+  );
+  console.log("");
 
-  // ── Review + edit metadata / selectors / output / performance ──────────
-  let config: ScraperConfig;
-  try {
-    config = await gatherAutoConfig(appCfg, profile, adapter, auto);
-  } catch (e: unknown) {
-    const code = (e as NodeJS.ErrnoException).code;
-    const msg  = (e as Error).message ?? '';
-    if (code === 'ERR_USE_AFTER_CLOSE' || msg.includes('cancelled') || msg.includes('canceled')) {
-      console.log(chalk.yellow('\n  Cancelled — goodbye!\n'));
-      await closeBrowser();
-      process.exit(0);
-    }
-    await closeBrowser();
-    throw e;
-  }
-
-  logger.info('Auto-scrape configuration confirmed', {
-    site: adapter.id, title: config.metadata.title, domain,
+  const { useDefaults } = await prompt<{ useDefaults: boolean }>({
+    type: "confirm",
+    name: "useDefaults",
+    message: "Use these settings as-is and continue?",
+    initial: true,
   });
+
+  let config: ScraperConfig;
+
+  if (useDefaults) {
+    // Fast path: the only remaining step is the "start scraping" confirmation below.
+    config = buildQuickAutoConfig(appCfg, profile, adapter, auto);
+  } else {
+    // Full customization path: review the chapter list, then walk through every setting.
+    disp.section("Review Chapter List");
+    auto.chapterLinks = await editChapterLinks(auto.chapterLinks);
+    if (auto.chapterLinks.length === 0) {
+      await reportNotice(["No chapters left to scrape."]);
+      await closeBrowser();
+      return mainMenu();
+    }
+
+    try {
+      config = await gatherAutoConfig(appCfg, profile, adapter, auto);
+    } catch (e: unknown) {
+      const code = (e as NodeJS.ErrnoException).code;
+      const msg = (e as Error).message ?? "";
+      if (
+        code === "ERR_USE_AFTER_CLOSE" ||
+        msg.includes("cancelled") ||
+        msg.includes("canceled")
+      ) {
+        console.log(chalk.yellow("\n  Cancelled — goodbye!\n"));
+        await closeBrowser();
+        process.exit(0);
+      }
+      await closeBrowser();
+      throw e;
+    }
+  }
+
+  logger.info("Auto-scrape configuration confirmed", {
+    site: adapter.id,
+    title: config.metadata.title,
+    domain,
+    quickPath: useDefaults,
+  });
+
+  // ── Second confirmation — only needed on the fast path.
+  //    gatherAutoConfig() already asked its own final confirmation on the
+  //    customization path, so we don't ask twice there. ─────────────────
+  if (useDefaults) {
+    disp.section("Ready to Scrape");
+    disp.info(
+      `Output file : ${chalk.cyan(`${config.outputDir}/${config.outputFilename}`)}`,
+    );
+    disp.info(
+      `Concurrency : ${chalk.cyan(String(config.concurrency))}   Delay: ${chalk.cyan(`${config.delayMin}-${config.delayMax}`)} ms`,
+    );
+    console.log("");
+
+    const { confirmed } = await prompt<{ confirmed: boolean }>({
+      type: "confirm",
+      name: "confirmed",
+      message: `Start scraping ${chalk.cyan(String(auto.chapterLinks.length))} chapters now?`,
+      initial: true,
+    });
+
+    if (!confirmed) {
+      console.log(chalk.yellow("\n  Cancelled by user.\n"));
+      await closeBrowser();
+      return mainMenu();
+    }
+  }
 
   const startMs = Date.now();
 
   try {
-    await scrapeAndPackage(browser, auto.chapterLinks, config, cookies, appCfg, domain, isNewDomain, startMs);
+    await scrapeAndPackage(
+      browser,
+      auto.chapterLinks,
+      config,
+      cookies,
+      appCfg,
+      domain,
+      isNewDomain,
+      startMs,
+    );
   } finally {
     await closeBrowser();
   }
@@ -465,9 +664,9 @@ async function startAutoScrape(): Promise<void> {
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 mainMenu().catch(async (e) => {
-  logger.error('Fatal error', { error: e });
+  logger.error("Fatal error", { error: e });
   disp.err(`Fatal: ${(e as Error).message}`);
-  disp.dim('See logs/error.log for full details.');
+  disp.dim("See logs/error.log for full details.");
   await closeBrowser().catch(() => {});
   process.exit(1);
 });

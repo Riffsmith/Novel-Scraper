@@ -1,57 +1,73 @@
-import type { NovelMetadata, Chapter } from '../types.js';
+import type { NovelMetadata, Chapter } from "../types.js";
 
 // ── XML/XHTML escaping ────────────────────────────────────────────────────
 export function escXml(s: string): string {
   return s
-    .replace(/&/g,  '&amp;')
-    .replace(/</g,  '&lt;')
-    .replace(/>/g,  '&gt;')
-    .replace(/"/g,  '&quot;')
-    .replace(/'/g,  '&apos;');
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function synopsisParagraphsXhtml(text: string): string {
   return text
     .split(/\n{2,}/)
-    .map(p => p.trim())
+    .map((p) => p.trim())
     .filter(Boolean)
-    .map(p => `<p>${escXml(p).replace(/\n/g, '<br/>')}</p>`)
-    .join('\n    ');
+    .map((p) => `<p>${escXml(p).replace(/\n/g, "<br/>")}</p>`)
+    .join("\n    ");
 }
 
-// ── Flatten to single-line plain text for OPF metadata (dc:description
-//    isn't a rendered field — it shouldn't carry paragraph markup).
-function flattenSynopsis(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
+// ── Normalise (but don't collapse) synopsis text for OPF metadata.
+//    dc:description's content model is plain text, so it can't carry <br/>
+//    or <p> markup like the synopsis page does — but XML text nodes are
+//    allowed to contain literal newlines, and xml:space="preserve" tells
+//    readers/tools not to collapse that whitespace. So paragraph breaks
+//    (\n\n) are kept as real newlines instead of being flattened to spaces.
+function normalizeSynopsisWhitespace(text: string): string {
+  return text
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 // ── Convert HTML → valid XHTML ─────────────────────────────────────────────
 export function toXhtml(html: string): string {
-  return html
-    // Self-close void tags
-    .replace(/<br(\s[^>]*)?>(?!\s*<\/br>)/gi, '<br$1/>')
-    .replace(/<hr(\s[^>]*)?>(?!\s*<\/hr>)/gi, '<hr$1/>')
-    .replace(/<img([^>]*[^/\s])>/gi,          '<img$1/>')
-    // Fix bare ampersands that weren't already escaped
-    .replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)/g, '&amp;');
+  return (
+    html
+      // Self-close void tags
+      .replace(/<br(\s[^>]*)?>(?!\s*<\/br>)/gi, "<br$1/>")
+      .replace(/<hr(\s[^>]*)?>(?!\s*<\/hr>)/gi, "<hr$1/>")
+      .replace(/<img([^>]*[^/\s])>/gi, "<img$1/>")
+      // Fix bare ampersands that weren't already escaped
+      .replace(/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[\da-fA-F]+);)/g, "&amp;")
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // mimetype (must be plain text, first file in ZIP, uncompressed)
 // ─────────────────────────────────────────────────────────────────────────────
-export const MIMETYPE = 'application/epub+zip';
+export const MIMETYPE = "application/epub+zip";
 
 // ── Embedded font(s) ─────────────────────────────────────────────────────────
 // Every embedded font gets one manifest entry pointing at OEBPS/fonts/<file>.
 // Add more entries here if additional fonts are embedded later (e.g. Firlest).
 interface EmbeddedFont {
-  id:       string;
+  id: string;
   filename: string;
   mediaType: string;
 }
 
 export const EMBEDDED_FONTS: EmbeddedFont[] = [
-  { id: 'font-foglihten', filename: 'FoglihtenNo07_Subset_Deep.ttf', mediaType: 'font/ttf' },
+  {
+    id: "font-foglihten",
+    filename: "FoglihtenNo07_Subset_Deep.ttf",
+    mediaType: "font/ttf",
+  },
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,39 +90,45 @@ export function containerXml(): string {
 // OEBPS/content.opf  (EPUB 3 package document)
 // ─────────────────────────────────────────────────────────────────────────────
 export function contentOpf(
-  meta    : NovelMetadata,
+  meta: NovelMetadata,
   chapters: Chapter[],
   hasCover: boolean,
-  bookId  : string,
+  bookId: string,
 ): string {
-  const now = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
-  const manifestChapters = chapters.map((ch) =>
-    `    <item id="ch-${ch.index}" href="chapters/chapter-${ch.index}.xhtml" media-type="application/xhtml+xml"/>`,
-  ).join('\n');
+  const manifestChapters = chapters
+    .map(
+      (ch) =>
+        `    <item id="ch-${ch.index}" href="chapters/chapter-${ch.index}.xhtml" media-type="application/xhtml+xml"/>`,
+    )
+    .join("\n");
 
-  const spineItems = chapters.map((ch) =>
-    `    <itemref idref="ch-${ch.index}"/>`,
-  ).join('\n');
+  const spineItems = chapters
+    .map((ch) => `    <itemref idref="ch-${ch.index}"/>`)
+    .join("\n");
 
   // The cover now doubles as the book's title page (Calibre convention:
   // properties="calibre:title-page" marks which manifest item is the title
   // page for readers/tools that look for it).
-  const coverManifest = hasCover ? `
+  const coverManifest = hasCover
+    ? `
     <item id="cover-img"  href="images/cover.jpg"  media-type="image/jpeg" properties="cover-image"/>
-    <item id="cover-page" href="cover.xhtml"        media-type="application/xhtml+xml" properties="calibre:title-page"/>` : '';
+    <item id="cover-page" href="cover.xhtml"        media-type="application/xhtml+xml" properties="calibre:title-page"/>`
+    : "";
 
   // Part of the linear reading order now (no longer linear="no") since it's
   // the first page a reader sees.
-  const coverSpine = hasCover
-    ? `    <itemref idref="cover-page"/>` : '';
+  const coverSpine = hasCover ? `    <itemref idref="cover-page"/>` : "";
 
   const coverMeta = hasCover
-    ? `    <meta name="cover" content="cover-img"/>` : '';
+    ? `    <meta name="cover" content="cover-img"/>`
+    : "";
 
-  const fontManifest = EMBEDDED_FONTS.map((f) =>
-    `    <item id="${f.id}" href="fonts/${f.filename}" media-type="${f.mediaType}"/>`,
-  ).join('\n');
+  const fontManifest = EMBEDDED_FONTS.map(
+    (f) =>
+      `    <item id="${f.id}" href="fonts/${f.filename}" media-type="${f.mediaType}"/>`,
+  ).join("\n");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0"
@@ -120,8 +142,8 @@ export function contentOpf(
     <dc:title>${escXml(meta.title)}</dc:title>
     <dc:creator opf:role="aut">${escXml(meta.author)}</dc:creator>
     <dc:language>${escXml(meta.language)}</dc:language>
-    <dc:publisher>${escXml(meta.publisher ?? 'WebNovel Scraper')}</dc:publisher>
-    ${meta.synopsis ? `<dc:description>${escXml(flattenSynopsis(meta.synopsis))}</dc:description>` : ''}
+    <dc:publisher>${escXml(meta.publisher ?? "WebNovel Scraper")}</dc:publisher>
+    ${meta.synopsis ? `<dc:description xml:space="preserve">${escXml(normalizeSynopsisWhitespace(meta.synopsis))}</dc:description>` : ""}
     <meta property="dcterms:modified">${now}</meta>
     <meta property="schema:accessMode">textual</meta>
 ${coverMeta}
@@ -145,7 +167,7 @@ ${spineItems}
   </spine>
 
   <guide>
-    ${hasCover ? '<reference type="cover"      title="Cover"              href="cover.xhtml"/>\n    <reference type="title-page" title="Title Page"          href="cover.xhtml"/>' : ''}
+    ${hasCover ? '<reference type="cover"      title="Cover"              href="cover.xhtml"/>\n    <reference type="title-page" title="Title Page"          href="cover.xhtml"/>' : ""}
     <reference type="other.synopsis" title="Synopsis"          href="synopsis.xhtml"/>
     <reference type="toc"        title="Table of Contents"  href="nav.xhtml"/>
     <reference type="text"       title="Start of Content"   href="chapters/chapter-1.xhtml"/>
@@ -156,13 +178,21 @@ ${spineItems}
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/nav.xhtml  (EPUB 3 navigation document)
 // ─────────────────────────────────────────────────────────────────────────────
-export function navXhtml(meta: NovelMetadata, chapters: Chapter[], hasCover: boolean): string {
-  const items = chapters.map((ch) =>
-    `      <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
-  ).join('\n');
+export function navXhtml(
+  meta: NovelMetadata,
+  chapters: Chapter[],
+  hasCover: boolean,
+): string {
+  const items = chapters
+    .map(
+      (ch) =>
+        `      <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
+    )
+    .join("\n");
 
   const coverItem = hasCover
-    ? `      <li><a href="cover.xhtml">Title Page</a></li>\n` : '';
+    ? `      <li><a href="cover.xhtml">Title Page</a></li>\n`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -195,15 +225,22 @@ ${items}
 // ─────────────────────────────────────────────────────────────────────────────
 // OEBPS/toc.ncx  (EPUB 2 compatibility)
 // ─────────────────────────────────────────────────────────────────────────────
-export function tocNcx(meta: NovelMetadata, chapters: Chapter[], bookId: string, hasCover: boolean): string {
+export function tocNcx(
+  meta: NovelMetadata,
+  chapters: Chapter[],
+  bookId: string,
+  hasCover: boolean,
+): string {
   // playOrder: [cover (if present) →] synopsis → chapters
   let playOrder = 1;
 
-  const coverNavPoint = hasCover ? `
+  const coverNavPoint = hasCover
+    ? `
     <navPoint id="np-cover" playOrder="${playOrder++}">
       <navLabel><text>Title Page</text></navLabel>
       <content src="cover.xhtml"/>
-    </navPoint>` : '';
+    </navPoint>`
+    : "";
 
   const synopsisNavPoint = `
     <navPoint id="np-synopsis" playOrder="${playOrder++}">
@@ -212,11 +249,15 @@ export function tocNcx(meta: NovelMetadata, chapters: Chapter[], bookId: string,
     </navPoint>`;
 
   const chapterStart = playOrder;
-  const navPoints = chapters.map((ch, i) => `
+  const navPoints = chapters
+    .map(
+      (ch, i) => `
   <navPoint id="np-${ch.index}" playOrder="${chapterStart + i}">
     <navLabel><text>${escXml(ch.title)}</text></navLabel>
     <content src="chapters/chapter-${ch.index}.xhtml"/>
-  </navPoint>`).join('');
+  </navPoint>`,
+    )
+    .join("");
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"
@@ -245,8 +286,9 @@ ${navPoints}
 //  author / publisher line along with the synopsis text itself.
 // ─────────────────────────────────────────────────────────────────────────────
 export function synopsisXhtml(meta: NovelMetadata): string {
-const synopsis = meta.synopsis
-    ? `\n  <div class="synopsis">\n    ${synopsisParagraphsXhtml(meta.synopsis)}\n  </div>` : '';
+  const synopsis = meta.synopsis
+    ? `\n  <div class="synopsis">\n    ${synopsisParagraphsXhtml(meta.synopsis)}\n  </div>`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -260,7 +302,7 @@ const synopsis = meta.synopsis
   <div class="title-page">
     <h1 class="novel-title">${escXml(meta.title)}</h1>
     <p class="author">by ${escXml(meta.author)}</p>
-    <p class="publisher">${escXml(meta.publisher ?? 'WebNovel Scraper')}</p>${synopsis}
+    <p class="publisher">${escXml(meta.publisher ?? "WebNovel Scraper")}</p>${synopsis}
   </div>
 </body>
 </html>`;
