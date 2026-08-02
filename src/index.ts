@@ -5,6 +5,7 @@
 
 import chalk from "chalk";
 import type { Browser, Cookie } from "playwright";
+import { v4 as uuid } from "uuid";
 import logger from "./logger/index.js";
 import * as disp from "./tui/display.js";
 import {
@@ -35,16 +36,31 @@ import {
 } from "./config/siteProfiles.js";
 import { SITE_ADAPTERS, findSiteAdapter } from "./sites/index.js";
 import type { AutoScrapeResult } from "./sites/types.js";
-import type { AppConfig, ScraperConfig, SiteProfile } from "./types.js";
+import type {
+  AppConfig,
+  Chapter,
+  ScrapeError,
+  ScraperConfig,
+  ScrapeSession,
+  SiteProfile,
+} from "./types.js";
 
-import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-const { prompt: _prompt } = require("enquirer");
-async function prompt<T extends Record<string, unknown>>(
-  q: object,
-): Promise<T> {
-  return _prompt(q) as Promise<T>;
-}
+// ── Back-navigable prompts + global keyboard shortcuts ─────────────────────
+import { step as prompt, WizardBack } from "./tui/wizard.js";
+import { installKeyHandling } from "./tui/keys.js";
+import { installScrapeQuitKey } from "./tui/scrapeKeys.js";
+import { pickResumableSession } from "./tui/sessionManager.js";
+import {
+  saveSession,
+  deleteSession,
+  findResumableSessionByUrl,
+  listSessions,
+} from "./sessions/store.js";
+import {
+  registerActiveSession,
+  clearActiveSession,
+  flushActiveSession,
+} from "./sessions/active.js";
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 process.on("SIGINT", () => gracefulExit("SIGINT"));
@@ -73,12 +89,21 @@ async function gracefulExit(reason: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(chalk.yellow(`\n\n  [${reason}] Shutting down gracefully…`));
+  // If a scrape is mid-flight, persist one last checkpoint before anything
+  // else — see sessions/active.ts. Safe to call even when nothing is active.
+  flushActiveSession();
   // closeAllBrowsers() closes the scraping singleton AND any still-open
   // ephemeral (cookie-capture) browser, so Ctrl+C mid-login can't orphan a
   // Chromium process.
   await closeAllBrowsers().catch(() => {});
   process.exit(0);
 }
+
+// Ctrl+Q (and, as of this feature, Ctrl+C too — see tui/keys.ts for why)
+// now quits gracefully from inside ANY prompt in the app, not just while a
+// progress bar is on screen. Installed once, here, before the first prompt
+// is ever shown.
+installKeyHandling((label) => gracefulExit(label));
 
 function hostnameFrom(url: string): string {
   try {
@@ -94,12 +119,22 @@ function hostnameFrom(url: string): string {
 async function mainMenu(): Promise<void> {
   disp.banner();
 
+  const resumableCount = listSessions().length;
+
   const { action } = await prompt<{ action: string }>({
     type: "select",
     name: "action",
     message: "What would you like to do?",
     choices: [
       { name: "scrape", message: "Start a new scrape and build an EPUB" },
+      ...(resumableCount > 0
+        ? [
+            {
+              name: "resume",
+              message: `Resume an interrupted scrape ${chalk.dim(`(${resumableCount})`)}`,
+            },
+          ]
+        : []),
       { name: "cookies", message: "Manage saved cookies" },
       { name: "settings", message: "Settings and site profiles" },
       { name: "quit", message: chalk.dim("Quit") },
@@ -109,6 +144,11 @@ async function mainMenu(): Promise<void> {
   if (action === "quit") {
     console.log(chalk.dim("\n  Goodbye!\n"));
     process.exit(0);
+  }
+  if (action === "resume") {
+    const session = await pickResumableSession();
+    if (!session) return mainMenu();
+    return resumeSession(session);
   }
   if (action === "cookies") {
     await manageCookies();
@@ -144,7 +184,14 @@ async function mainMenu(): Promise<void> {
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Shared tail — run the queue, build the EPUB, print summary, offer to
-//  save a site profile. Used by both the manual and auto scrape flows.
+//  save a site profile. Used by the manual flow, the auto flow, and resume.
+//
+//  Resume support: a ScrapeSession checkpoint is written to disk before the
+//  first chapter starts, updated periodically while the queue runs (see
+//  queue/index.ts's onProgress), flushed one more time on Ctrl+C/SIGTERM/an
+//  unhandled crash (see gracefulExit above), and deleted once the EPUB is
+//  actually built — whether or not every chapter made it in, since at that
+//  point the deliverable exists and there's nothing left to resume.
 // ═══════════════════════════════════════════════════════════════════════════
 async function scrapeAndPackage(
   browser: Browser,
@@ -155,15 +202,63 @@ async function scrapeAndPackage(
   domain: string,
   isNewDomain: boolean,
   startMs: number,
+  entryUrl: string,
+  resumeFrom?: ScrapeSession,
 ): Promise<void> {
   disp.section("Scraping Chapters");
-  const { chapters, errors } = await runScrapeQueue(
-    browser,
-    chapterUrls,
-    config,
-    cookies.length ? cookies : undefined,
-    appCfg,
-  );
+  disp.dim("Press 'q' or Ctrl+C at any time to stop and save progress for later.");
+
+  const sessionId = resumeFrom?.id ?? uuid();
+  const novelTitle = config.metadata.title;
+  let liveChapters: Chapter[] = resumeFrom?.completedChapters ?? [];
+  let liveErrors: ScrapeError[] = [];
+
+  const persist = (): void => {
+    saveSession({
+      id: sessionId,
+      status: "in-progress",
+      createdAt: resumeFrom?.createdAt ?? new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      domain,
+      entryUrl,
+      novelTitle,
+      config,
+      chapterUrls,
+      completedChapters: liveChapters,
+      errors: liveErrors,
+    });
+  };
+
+  registerActiveSession(persist);
+  persist(); // a checkpoint exists from the very first moment, even before chapter 1 finishes
+
+  const stopQuitKey = installScrapeQuitKey((label) => {
+    void gracefulExit(label);
+  });
+
+  let chapters: Chapter[];
+  let errors: ScrapeError[];
+  try {
+    ({ chapters, errors } = await runScrapeQueue(
+      browser,
+      chapterUrls,
+      config,
+      cookies.length ? cookies : undefined,
+      appCfg,
+      {
+        previousChapters: resumeFrom?.completedChapters,
+        onProgress: (snap) => {
+          liveChapters = snap.chapters;
+          liveErrors = snap.errors;
+          persist();
+        },
+      },
+    ));
+  } finally {
+    stopQuitKey();
+  }
+
+  clearActiveSession();
 
   if (chapters.length === 0) {
     disp.err("No chapters were scraped successfully.");
@@ -184,6 +279,11 @@ async function scrapeAndPackage(
     config.outputDir,
     config.outputFilename,
   );
+
+  // The EPUB now exists — this session's job is done, whether or not every
+  // last chapter made it in (the partial-failure summary above already
+  // covers that).
+  deleteSession(sessionId);
 
   const totalWords = chapters.reduce((s, ch) => s + ch.wordCount, 0);
   disp.summary({
@@ -224,6 +324,58 @@ async function scrapeAndPackage(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  Resume flow — picks up a ScrapeSession checkpoint exactly where it left
+//  off. Already-completed chapters are never re-downloaded (see
+//  queue/index.ts); everything else (including anything that failed
+//  permanently last time) is retried.
+// ═══════════════════════════════════════════════════════════════════════════
+async function resumeSession(session: ScrapeSession): Promise<void> {
+  const appCfg = readConfig();
+  logger.level = appCfg.logLevel;
+
+  disp.section("Resuming Scrape");
+  disp.success(
+    `Resuming "${session.novelTitle}" — ${session.completedChapters.length}/${session.chapterUrls.length} chapters already done`,
+  );
+  console.log("");
+
+  const domain = session.domain;
+  let cookies: Cookie[] = [];
+  if (domain) {
+    const selection = await selectCookieProfileForScrape(domain);
+    cookies = selection.cookies;
+  }
+
+  const browser = await getBrowser({
+    headless: appCfg.headless,
+    humanize: appCfg.humanize,
+    humanPreset: appCfg.humanPreset,
+    fingerprintSeed: appCfg.fingerprintSeed,
+    timezone: "America/New_York",
+    locale: appCfg.defaultLanguage === "en" ? "en-US" : appCfg.defaultLanguage,
+  });
+
+  const startMs = Date.now();
+
+  try {
+    await scrapeAndPackage(
+      browser,
+      session.chapterUrls,
+      session.config,
+      cookies,
+      appCfg,
+      domain,
+      false, // isNewDomain — resuming, no point re-asking to save a profile
+      startMs,
+      session.entryUrl,
+      session,
+    );
+  } finally {
+    await closeBrowser();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  Manual scrape flow
 // ═══════════════════════════════════════════════════════════════════════════
 async function startScrape(): Promise<void> {
@@ -255,7 +407,8 @@ async function startScrape(): Promise<void> {
     },
   });
 
-  const domain = hostnameFrom(entryUrl.trim());
+  const trimmedEntryUrl = entryUrl.trim();
+  const domain = hostnameFrom(trimmedEntryUrl);
   const profile = domain ? loadProfile(domain) : null;
   const isNewDomain = domain ? !hasProfile(domain) : false;
 
@@ -263,16 +416,42 @@ async function startScrape(): Promise<void> {
     logger.info(`Site profile matched for ${domain}`);
   }
 
+  // ── 1b. Offer to resume a matching in-progress session ─────────────────
+  const existingSession = findResumableSessionByUrl(trimmedEntryUrl);
+  if (existingSession) {
+    disp.section("Resumable Scrape Found");
+    disp.info(
+      `A previous incomplete scrape was found for this URL: "${existingSession.novelTitle}" ` +
+        `(${existingSession.completedChapters.length}/${existingSession.chapterUrls.length} chapters done).`,
+    );
+    const { resume } = await prompt<{ resume: boolean }>({
+      type: "confirm",
+      name: "resume",
+      message: "Resume it instead of starting a new configuration?",
+      initial: true,
+    });
+    if (resume) return resumeSession(existingSession);
+
+    const { discard } = await prompt<{ discard: boolean }>({
+      type: "confirm",
+      name: "discard",
+      message: "Discard the old incomplete session so it stops being offered?",
+      initial: false,
+    });
+    if (discard) deleteSession(existingSession.id);
+  }
+
   // ── 2. Gather full configuration (with pre-fills from profile) ─────────
   let config;
   try {
     config = await gatherConfig(appCfg, profile);
     if (config.method === "toc" && !config.tocUrl) {
-      config.tocUrl = entryUrl.trim();
+      config.tocUrl = trimmedEntryUrl;
     } else if (config.method === "sequential" && !config.firstChapterUrl) {
-      config.firstChapterUrl = entryUrl.trim();
+      config.firstChapterUrl = trimmedEntryUrl;
     }
   } catch (e: unknown) {
+    if (e instanceof WizardBack) return mainMenu();
     const code = (e as NodeJS.ErrnoException).code;
     const msg = (e as Error).message ?? "";
     if (
@@ -375,6 +554,7 @@ async function startScrape(): Promise<void> {
       domain,
       isNewDomain,
       startMs,
+      trimmedEntryUrl,
     );
   } finally {
     await closeBrowser();
@@ -439,6 +619,31 @@ async function startAutoScrape(): Promise<void> {
   const domain = hostnameFrom(trimmedUrl);
   const profile = domain ? loadProfile(domain) : null;
   const isNewDomain = domain ? !hasProfile(domain) : false;
+
+  // ── Offer to resume a matching in-progress session ─────────────────────
+  const existingSession = findResumableSessionByUrl(trimmedUrl);
+  if (existingSession) {
+    disp.section("Resumable Scrape Found");
+    disp.info(
+      `A previous incomplete scrape was found for this URL: "${existingSession.novelTitle}" ` +
+        `(${existingSession.completedChapters.length}/${existingSession.chapterUrls.length} chapters done).`,
+    );
+    const { resume } = await prompt<{ resume: boolean }>({
+      type: "confirm",
+      name: "resume",
+      message: "Resume it instead of starting a new configuration?",
+      initial: true,
+    });
+    if (resume) return resumeSession(existingSession);
+
+    const { discard } = await prompt<{ discard: boolean }>({
+      type: "confirm",
+      name: "discard",
+      message: "Discard the old incomplete session so it stops being offered?",
+      initial: false,
+    });
+    if (discard) deleteSession(existingSession.id);
+  }
 
   // ── Resolve which cookie profile to use for the domain ───────────────
   const selection = domain
@@ -548,7 +753,16 @@ async function startAutoScrape(): Promise<void> {
   } else {
     // Full customization path: review the chapter list, then walk through every setting.
     disp.section("Review Chapter List");
-    auto.chapterLinks = await editChapterLinks(auto.chapterLinks);
+    try {
+      auto.chapterLinks = await editChapterLinks(auto.chapterLinks);
+    } catch (e) {
+      // editChapterLinks isn't wrapped in the try/finally that covers the
+      // rest of this flow (that only starts once scraping itself begins),
+      // so anything it throws — including Escape bubbling all the way out
+      // of its action menu — needs its own cleanup here.
+      await closeBrowser();
+      throw e;
+    }
     if (auto.chapterLinks.length === 0) {
       await reportNotice(["No chapters left to scrape."]);
       await closeBrowser();
@@ -558,6 +772,10 @@ async function startAutoScrape(): Promise<void> {
     try {
       config = await gatherAutoConfig(appCfg, profile, adapter, auto);
     } catch (e: unknown) {
+      if (e instanceof WizardBack) {
+        await closeBrowser();
+        return mainMenu();
+      }
       const code = (e as NodeJS.ErrnoException).code;
       const msg = (e as Error).message ?? "";
       if (
@@ -620,6 +838,7 @@ async function startAutoScrape(): Promise<void> {
       domain,
       isNewDomain,
       startMs,
+      trimmedUrl,
     );
   } finally {
     await closeBrowser();
@@ -628,9 +847,18 @@ async function startAutoScrape(): Promise<void> {
 
 // ── Boot ───────────────────────────────────────────────────────────────────────
 mainMenu().catch(async (e) => {
+  if (e instanceof WizardBack || e === "") {
+    // "" is enquirer's own cancellation-rejection value (see tui/keys.ts) —
+    // i.e. Escape was pressed somewhere that isn't wrapped in its own
+    // recovery logic. Rather than crash with a "Fatal: undefined" message,
+    // treat it the same as backing all the way out: return to the menu.
+    console.log(chalk.dim("\n  Returning to the main menu…\n"));
+    return mainMenu().catch(() => process.exit(1));
+  }
   logger.error("Fatal error", { error: e });
-  disp.err(`Fatal: ${(e as Error).message}`);
+  disp.err(`Fatal: ${(e as Error)?.message ?? String(e)}`);
   disp.dim("See logs/error.log for full details.");
   await closeAllBrowsers().catch(() => {});
   process.exit(1);
 });
+

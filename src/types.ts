@@ -171,3 +171,43 @@ export interface ScrapeResult {
   totalWords: number;
   scrapeMs: number;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Resumable scrape sessions  (XDG_DATA_HOME/webnovel-scraper/sessions/*.json)
+//
+//  A session is a checkpoint of one in-progress scrape: the exact config that
+//  was confirmed, the full ordered chapter URL list, and whichever chapters
+//  have actually been scraped so far (kept in full, not just their indices,
+//  so a resume never has to re-download anything that already succeeded).
+//  It is written before the first chapter starts, updated periodically while
+//  the queue runs, flushed one last time on Ctrl+C/SIGTERM/an unhandled
+//  crash, and deleted once the EPUB is actually built.
+// ─────────────────────────────────────────────────────────────────────────────
+export type SessionStatus = "in-progress";
+
+export interface ScrapeSession {
+  id: string;
+  status: SessionStatus;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+
+  domain: string;
+  entryUrl: string; // exactly what the user typed at the start — the match key for "resume this?"
+  novelTitle: string;
+
+  config: ScraperConfig;
+  chapterUrls: string[]; // full ordered list, 0-based position == Chapter.index - 1
+
+  completedChapters: Chapter[]; // chapters already scraped, in any order
+  errors: ScrapeError[]; // most recent failures (chapters not in completedChapters get retried on resume)
+}
+
+// ── Lightweight listing shape for the "resume a scrape" picker ─────────────
+export interface SessionSummary {
+  id: string;
+  novelTitle: string;
+  domain: string;
+  totalChapters: number;
+  completedCount: number;
+  updatedAt: string;
+}

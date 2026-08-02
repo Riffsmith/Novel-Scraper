@@ -1,0 +1,26 @@
+# Phase 1 fixture job — local test server scrape
+method: toc
+tocUrl: http://127.0.0.1:8080/toc.html
+outputDir: ./output
+outputFilename: test-novel
+headless: true
+concurrency: 2
+delayMin: 100
+delayMax: 300
+
+output:
+  epub: true
+
+contentSelector: ".chapter-body"
+separateTitle: true
+titleSelector: "h1.chapter-title"
+excludeSelectors:
+  - ".ad"
+  - ".nav"
+
+metadata:
+  title: "Test Novel"
+  author: "Test Author"
+  language: "en"
+  coverSource: "none"
+  publisher: "WebNovel Scraper Tests"
