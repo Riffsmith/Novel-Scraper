@@ -35,6 +35,7 @@ class TrackingBrowserPort implements BrowserPort {
     return { close: async () => {} };
   }
   async newPage(_ctx: ContextHandle): Promise<PageHandle> {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- arrow mutates outer pageHtml on each goto
     const outer = this;
     const fake = new FakePage(this.pageHtml);
     const orig = fake.goto;

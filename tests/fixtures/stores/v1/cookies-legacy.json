@@ -1,0 +1,22 @@
+{
+  "legacy-site.com": [
+    {
+      "name": "session",
+      "value": "legacy-abc",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "token",
+      "value": "legacy-tok",
+      "path": "/",
+      "expires": 1750000000,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    }
+  ]
+}

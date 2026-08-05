@@ -1,0 +1,49 @@
+{
+  "id": "session-2",
+  "status": "in-progress",
+  "createdAt": "2026-06-01T00:00:00.000Z",
+  "updatedAt": "2026-06-10T00:00:00.000Z",
+  "domain": "novelfire.net",
+  "entryUrl": "https://novelfire.net/novel/another",
+  "novelTitle": "Another Novel",
+  "config": {
+    "method": "sequential",
+    "firstChapterUrl": "https://novelfire.net/novel/another/ch1",
+    "lastChapterUrl": "https://novelfire.net/novel/another/ch5",
+    "nextButtonLocators": [
+      { "kind": "css", "value": ".next" }
+    ],
+    "contentSelector": ".content",
+    "separateTitle": false,
+    "excludeSelectors": [],
+    "metadata": {
+      "title": "Another Novel",
+      "author": "Some Author",
+      "language": "en",
+      "coverSource": "none"
+    },
+    "outputDir": "./output",
+    "outputFilename": "another",
+    "concurrency": 1,
+    "delayMin": 500,
+    "delayMax": 2000,
+    "headless": true
+  },
+  "chapterUrls": [
+    "https://novelfire.net/novel/another/ch1",
+    "https://novelfire.net/novel/another/ch2",
+    "https://novelfire.net/novel/another/ch3",
+    "https://novelfire.net/novel/another/ch4",
+    "https://novelfire.net/novel/another/ch5"
+  ],
+  "completedChapters": [
+    {
+      "index": 1,
+      "title": "Chapter A1",
+      "url": "https://novelfire.net/novel/another/ch1",
+      "htmlContent": "<p>A1 content.</p>",
+      "wordCount": 3
+    }
+  ],
+  "errors": []
+}

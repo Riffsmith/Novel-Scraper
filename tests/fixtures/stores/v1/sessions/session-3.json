@@ -1,0 +1,34 @@
+{
+  "id": "session-3",
+  "status": "in-progress",
+  "createdAt": "2026-05-01T00:00:00.000Z",
+  "updatedAt": "2026-05-12T00:00:00.000Z",
+  "domain": "wtr-lab.com",
+  "entryUrl": "https://wtr-lab.com/en/novel/old-novel",
+  "novelTitle": "Old Novel (Zero Progress)",
+  "config": {
+    "method": "toc",
+    "tocUrl": "https://wtr-lab.com/en/novel/old-novel",
+    "contentSelector": ".c",
+    "separateTitle": false,
+    "excludeSelectors": [],
+    "metadata": {
+      "title": "Old Novel",
+      "author": "Unknown",
+      "language": "en",
+      "coverSource": "none"
+    },
+    "outputDir": "./output",
+    "outputFilename": "old",
+    "concurrency": 2,
+    "delayMin": 1200,
+    "delayMax": 3500,
+    "headless": true
+  },
+  "chapterUrls": [
+    "https://wtr-lab.com/en/novel/old-novel/ch1",
+    "https://wtr-lab.com/en/novel/old-novel/ch2"
+  ],
+  "completedChapters": [],
+  "errors": []
+}

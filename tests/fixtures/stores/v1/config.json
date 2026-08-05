@@ -1,0 +1,20 @@
+{
+  "defaultOutputDir": "./custom-output",
+  "defaultConcurrency": 3,
+  "defaultDelayMin": 800,
+  "defaultDelayMax": 4000,
+  "headless": false,
+  "waitUntil": "networkidle",
+  "navigationTimeoutMs": 45000,
+  "humanize": true,
+  "humanPreset": "careful",
+  "fingerprintSeed": 42,
+  "maxRetries": 5,
+  "defaultLanguage": "en",
+  "defaultAuthor": "Unknown",
+  "defaultPublisher": "WebNovel Scraper",
+  "logLevel": "debug",
+  "askSaveProfile": false,
+  "customKeyPreserved": "should survive round-trip",
+  "anotherCustom": 123
+}

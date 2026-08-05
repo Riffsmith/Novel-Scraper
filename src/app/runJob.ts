@@ -9,8 +9,8 @@ import { ArchiverEpubWriter } from "../adapters/epub-archiver/ArchiverEpubWriter
 import { NoopUIAdapter } from "../adapters/ui-noop/NoopUIAdapter.js";
 import { createWinstonLogger } from "../adapters/logger-winston/WinstonLogger.js";
 
-import { ChapterListService } from "../core/services/ChapterListService.js";
 import { ScrapeService } from "../core/services/ScrapeService.js";
+import { discoverJobChapters } from "../core/services/DiscoveryService.js";
 
 import type { JobConfig, ScrapeResult } from "../core/domain/JobConfig.js";
 import type { ScrapeSession } from "../core/domain/Session.js";
@@ -52,52 +52,7 @@ export async function runJob(
   }
 
   if (!job.chapterLinks && !resume) {
-    const browserHandle = await browser.launch({
-      headless: job.headless,
-      humanize: false,
-      humanPreset: "default",
-      fingerprintSeed: null,
-      timezone: "America/New_York",
-      locale: "en-US",
-    });
-
-    try {
-      const ctx = await browser.createContext(browserHandle, cookies);
-      const page = await browser.newPage(ctx);
-      const listService = new ChapterListService(log, ui);
-
-      if (job.method === "toc" && job.tocUrl) {
-        job.chapterLinks = await listService.discoverTOC(
-          page,
-          job.tocUrl,
-          "domcontentloaded",
-          30_000,
-        );
-      } else if (
-        job.method === "sequential" &&
-        job.firstChapterUrl &&
-        job.lastChapterUrl &&
-        job.nextButtonLocators
-      ) {
-        job.chapterLinks = await listService.collectSequential(
-          page,
-          job.firstChapterUrl,
-          job.lastChapterUrl,
-          job.nextButtonLocators,
-          job.delayMin,
-          job.delayMax,
-          "domcontentloaded",
-          30_000,
-        );
-      } else {
-        throw new Error("Invalid discovery config");
-      }
-
-      await page.close();
-      await ctx.close();
-    } finally {
-      await browserHandle.close();
-    }
+    job.chapterLinks = await discoverJobChapters(job, { browser, cookies, ui, log });
   }
 
   const scrapeService = new ScrapeService({

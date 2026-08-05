@@ -50,6 +50,50 @@ export interface PageHandle {
   bodyInnerText(): Promise<string>;
   url(): string;
   close(): Promise<void>;
+
+  // ── Phase 4 site-adapter additions (ADR-P4-A) ──────────────────────────────
+  //
+  // All three are the v2 ports of v1 site-adapter evaluate operations. Every
+  // one is a NAMED method returning plain values - never a generic evaluate()
+  // closure - so the P4 evaluate-as-string invariant stays enforced by
+  // construction (read AGENTS.md "page.evaluate() string-constant rule").
+
+  /**
+   * Read the first matching element's `attr` (optionally falling back to a
+   * second attribute, mirroring v1's lazy-load `src`/`data-src` cover probe).
+   * Returns null on miss or error.
+   */
+  getAttribute(selector: string, attr: string, fallbackAttr?: string): Promise<string | null>;
+
+  /**
+   * Read the first matching element's `innerText`, with optional noise
+   * descendant strips so the cover-toggle/text-toggle that ships inside the
+   * synopsis container doesn't leak into the description. Best-effort null
+   * on miss.
+   */
+  innerText(selector: string, timeoutMs: number, excludeSelectors?: string[]): Promise<string | null>;
+
+  /**
+   * Return `Array.from(document.querySelectorAll(selector)).map(a => a.href)`
+   * from the live page - used by every site adapter's chapter-list extractor.
+   * The selector does both: scope (`.chapter-list` for novelfire) and pattern
+   * (`a[href*="/chapter-"]` for wtr-lab). Honouring the P4 rule: the actual
+   * script is a string constant inside the Playwright adapter, not a closure
+   * parameter here.
+   */
+  anchorHrefs(selector: string): Promise<string[]>;
+
+  /**
+   * Evaluate a string script in the page context (ADR-P4-A).
+   *
+   * The script MUST be a plain string constant defined in the adapter, never a
+   * function reference or a closure - esbuild's keepNames transform would
+   * inject a `__name()` helper that does not exist in browser scope, causing
+   * a silent ReferenceError (read AGENTS.md "page.evaluate() string-constant
+   * rule", v1 sites/wtrLab.ts:61-73 note). The TUI's SiteAdapter ports supply
+   * the constant; this method just ships it.
+   */
+  evaluateScript<T>(script: string): Promise<T>;
 }
 
 export interface BrowserPort {
@@ -60,4 +104,15 @@ export interface BrowserPort {
 
   /** Ephemeral headed browser for login capture.  Phase 3 scope. */
   launchEphemeral?(opts: BrowserLaunchOpts): Promise<BrowserHandle>;
+
+  /**
+   * Read every cookie currently attached to a context.
+   *
+   * Phase 3 addition (ADR-P3-A): cookie login-capture needs the equivalent
+   * of Playwright's `context.cookies()` exposed through the port so the
+   * ui-clack capture flow never imports Playwright. A named method (not a
+   * generic evaluate()) keeps the P4 evaluate-as-string rule enforceable
+   * by construction, mirroring `findElement()` / `url()` from Phase 1 D3.
+   */
+  contextCookies(ctx: ContextHandle): Promise<import("../core/domain/Cookie.js").StoredCookie[]>;
 }

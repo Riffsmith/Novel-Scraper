@@ -1,0 +1,62 @@
+{
+  "wtr-lab.com": {
+    "default": {
+      "cookies": [
+        {
+          "name": "session",
+          "value": "abc123",
+          "path": "/",
+          "expires": -1,
+          "httpOnly": true,
+          "secure": true,
+          "sameSite": "Lax"
+        },
+        {
+          "name": "remember_token",
+          "value": "tok_xxx",
+          "path": "/",
+          "expires": 1750000000,
+          "httpOnly": false,
+          "secure": false,
+          "sameSite": "None"
+        }
+      ],
+      "createdAt": "2026-07-01T00:00:00.000Z",
+      "updatedAt": "2026-07-15T00:00:00.000Z",
+      "lastUsedAt": "2026-07-20T00:00:00.000Z"
+    },
+    "alt-account": {
+      "cookies": [
+        {
+          "name": "session",
+          "value": "def456",
+          "path": "/",
+          "expires": -1,
+          "httpOnly": true,
+          "secure": true,
+          "sameSite": "Lax"
+        }
+      ],
+      "label": "Alt account via VPN",
+      "createdAt": "2026-06-01T00:00:00.000Z",
+      "updatedAt": "2026-06-15T00:00:00.000Z"
+    }
+  },
+  "novelfire.net": {
+    "default": {
+      "cookies": [
+        {
+          "name": "token",
+          "value": "ghi789",
+          "path": "/",
+          "expires": 1750500000,
+          "httpOnly": false,
+          "secure": true,
+          "sameSite": "Strict"
+        }
+      ],
+      "createdAt": "2026-08-01T00:00:00.000Z",
+      "updatedAt": "2026-08-01T00:00:00.000Z"
+    }
+  }
+}

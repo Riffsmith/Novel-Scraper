@@ -219,3 +219,53 @@ mean stubbing an `AppConfig` that Phase 2 will replace — a wasted effort.
 **Consequence:** Retry count is fixed at 3 (which is v1's default
 `maxRetries: 3`). Phase 2 must thread `AppConfig.maxRetries` into
 `ScrapeService` before this becomes a regression.
+
+---
+
+## D11 — Phase 0 `pnpm lint` + ESLint flat config landed retrospectively
+
+**Spec:** Phase 0 (`docs/04-implementation-roadmap.md` §Phase 0 scope and
+acceptance) mandates "Add `pnpm typecheck`, `pnpm lint`, `pnpm test` scripts"
+and the acceptance bullet reads "`pnpm i && pnpm typecheck && pnpm lint && pnpm
+test` pass". D1 above lists only `typecheck` / `test` / `test:watch` as the
+scripts folded in with the Phase 1 scaffolding and omits that `lint` was never
+added.
+
+**Deviation:** `pnpm lint` and an ESLint flat config did not exist after Phase
+1 or Phase 2. Added retrospectively as part of the Phase 0 retrospective audit:
+
+- `eslint.config.mjs` (flat config, ESLint 10 + typescript-eslint 8) at the
+  repo root. v1 reference-oracle code (`src/scraper|queue|epub|sessions|tui|
+  cookies|config|sites|logger`, `src/types.ts`, `src/index.ts`) and the
+  byte-copied `src/adapters/epub-archiver/templates.ts` + `assets.ts` are in
+  `ignores` so the v1-untouched invariant from AGENTS.md holds.
+- `"lint": "eslint ."` added to `package.json`.
+- A `no-restricted-imports` rule blocks `playwright` (not `playwright-core`)
+  imports in any non-ignored path, making ADR-001's "playwright-core only in
+  new code" hard constraint an enforceable lint failure rather than a comment.
+- `@typescript-eslint/no-explicit-any` is `off` for `tests/**` only (test
+  fakes legitimately use `any` on mock page handles).
+
+**Reason:** AGENTS.md's own Code Style section mandates "Always run ESLint
+before committing ... Fix any errors before committing. if eslint not there,
+install it" — but the tooling to satisfy that mandate was absent. The Phase 0
+acceptance bullet was implicitly un-runnable.
+
+**Consequence:** The Phase 0 acceptance bullet `pnpm i && pnpm typecheck &&
+pnpm lint && pnpm test` is now demonstrable. The five lint errors the baseline
+run surfaced in `src/` (an `as any` cast, an unused-expression resource-route
+  form, three `doctorLog: any` parameters, and a `(doc as any).schemaVersion`
+  stamp cast) were fixed by type tightening (`any` -> `Logger` / `unknown` /
+  `Parameters<typeof chromium.launch>[0]`) or by a narrowly-scoped
+  `eslint-disable-next-line` citing the v1 parity rationale. No business logic
+  was changed. The remaining 32 warnings are unused-import/filed-as-Phase-6
+  cleanup territory, not blocking.
+
+A separate Phase-0-scope item also addressed retrospectively: the
+`config.yaml.example` promised by Phase 0 ("Merge `.env.example` hints into
+`config.yaml.example`") is created from the published
+`docs/05-migration-guide.md` §2 example (the doc says "treat it as a spec, not
+a sketch"), with a one-line note that `LOG_LEVEL` and the `XDG_*` env vars are
+still honored per migration guide §7. The stale `.env.example` is deleted.
+And `package.json` `engines.node` is bumped from `>=18.0.0` to `>=20.0.0` to
+match AGENTS.md line 8 ("Requires Node.js >= 20, see `.nvmrc` = 22").

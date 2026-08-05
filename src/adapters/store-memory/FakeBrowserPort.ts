@@ -12,7 +12,7 @@ import type {
   ElementRef,
   WaitUntil,
   } from "../../ports/BrowserPort.js";
-import type { DomainCookie } from "../../core/domain/Cookie.js";
+import type { DomainCookie, StoredCookie } from "../../core/domain/Cookie.js";
 
 
 export class FakePage implements PageHandle {
@@ -49,7 +49,7 @@ export class FakePage implements PageHandle {
 
   async findAnchorByRegex(pattern: string, flags: string): Promise<ElementRef | null> {
     const re = new RegExp(pattern, flags);
-    let found: any = null;
+    let found: unknown = null;
     this.$("a[href]").each((_i, el) => {
       if (found) return false;
       const text = this.$(el).text();
@@ -81,7 +81,50 @@ export class FakePage implements PageHandle {
     return this.$("body").text();
   }
 
+  // ── Phase 4 site-adapter hooks (ADR-P4-A) - cheerio-backed test double ────
+  //
+  // `evaluateScript` doesn't run a JS engine on the fake; the parity tests
+  // pass `page.setContent(html)` then call `anchorHrefs` / `getAttribute` /
+  // `innerText` directly, NOT the script-based path - so `evaluateScript`
+  // throws "not implemented". Real-binary paths run the actual string script
+  // against a real page; fake is for the pure-DOM-shape tests.
 
+  async getAttribute(selector: string, attr: string, fallbackAttr?: string): Promise<string | null> {
+    const el = this.$(selector).first();
+    if (!el.length) return null;
+    const primary = el.attr(attr);
+    if (primary) return primary;
+    return fallbackAttr ? (el.attr(fallbackAttr) ?? null) : null;
+  }
+
+  async innerText(selector: string, _timeout: number, excludeSelectors: string[] = []): Promise<string | null> {
+    const el = this.$(selector).first();
+    if (!el.length) return null;
+    if (excludeSelectors.length > 0) {
+      // Strip noise descendants before reading text - mirrors Playwright impl.
+      const clone = this.$.load(this.$.html(el) ?? "");
+      for (const sel of excludeSelectors) {
+        clone(sel).remove();
+      }
+      const raw = clone("body").text() ?? "";
+      return raw.split("\n").map((l) => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+    const raw = el.text() ?? "";
+    return raw.split("\n").map((l) => l.trim()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  async anchorHrefs(selector: string): Promise<string[]> {
+    const out: string[] = [];
+    this.$(selector).each((_i, el) => {
+      const href = this.$(el).attr("href");
+      if (href) out.push(href);
+    });
+    return out;
+  }
+
+  async evaluateScript<T>(_script: string): Promise<T> {
+    throw new Error("FakePage.evaluateScript is not implemented - pass HTML fixtures and call the named DOM methods directly");
+  }
 
   private extractTitle(): string {
     const m = /<title[^>]*>(.*?)<\/title>/i.exec(this.html);
@@ -91,6 +134,8 @@ export class FakePage implements PageHandle {
 
 export class FakeBrowserPort implements BrowserPort {
   private pageContent: string;
+  private contextCookiesMap: StoredCookie[] = [];
+  private ephemeralLaunches = 0;
 
   constructor(html: string = "") {
     this.pageContent = html;
@@ -115,6 +160,22 @@ export class FakeBrowserPort implements BrowserPort {
   async closeAll() {}
 
   async launchEphemeral(_opts: BrowserLaunchOpts): Promise<BrowserHandle> {
+    this.ephemeralLaunches++;
     return this.launch(_opts);
+  }
+
+  /** Phase 3 / ADR-P3-A: in-memory cookie read-back for capture tests. */
+  async contextCookies(_ctx: ContextHandle): Promise<StoredCookie[]> {
+    return [...this.contextCookiesMap];
+  }
+
+  /** Test-double hook: seed the cookies a future `contextCookies()` call will return. */
+  setContextCookies(next: StoredCookie[]): void {
+    this.contextCookiesMap = [...next];
+  }
+
+  /** Number of headed ephemeral launches observed; useful for capture assertions. */
+  ephemeralLaunchCount(): number {
+    return this.ephemeralLaunches;
   }
 }

@@ -1,0 +1,31 @@
+{
+  "wtr-lab.com": {
+    "domain": "wtr-lab.com",
+    "method": "toc",
+    "contentSelector": ".chapter-content",
+    "separateTitle": true,
+    "titleSelector": "h1.chapter-title",
+    "excludeSelectors": [".ad", ".nav", ".footer"],
+    "savedAt": "2026-07-01T00:00:00.000Z",
+    "updatedAt": "2026-07-10T00:00:00.000Z"
+  },
+  "novelfire.net": {
+    "domain": "novelfire.net",
+    "method": "sequential",
+    "contentSelector": ".entry-content",
+    "separateTitle": false,
+    "excludeSelectors": [],
+    "nextButtonLocators": [
+      {
+        "kind": "css",
+        "value": ".next-page"
+      },
+      {
+        "kind": "regex",
+        "value": "Next Chapter"
+      }
+    ],
+    "savedAt": "2026-08-01T00:00:00.000Z",
+    "updatedAt": "2026-08-01T00:00:00.000Z"
+  }
+}

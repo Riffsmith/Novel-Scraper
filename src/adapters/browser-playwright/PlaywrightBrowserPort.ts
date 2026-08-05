@@ -19,7 +19,8 @@ import type {
   BrowserLaunchOpts,
   ElementRef,
 } from "../../ports/BrowserPort.js";
-import type { DomainCookie } from "../../core/domain/Cookie.js";
+import type { DomainCookie, StoredCookie } from "../../core/domain/Cookie.js";
+import { domainCookiesToPlaywright, playwrightCookiesToStored } from "./cookieMappers.js";
 
 // ── Playwright handle wrappers ──────────────────────────────────────────
 
@@ -88,8 +89,11 @@ export class PlaywrightBrowserPort implements BrowserPort {
         : undefined,
     });
 
+    // ADR-006: buildLaunchOptions returns cloakbrowser's own LaunchOptions
+    // shape, which is assignable-but-not-identical to playwright-core's. The
+    // cast bridges the two without re-deriving stealth args (ADR-001 risk).
     const browser = await chromium.launch({
-      ...(cloakOpts as any),
+      ...(cloakOpts as unknown as Parameters<typeof chromium.launch>[0]),
       executablePath: binaryPath,
     });
 
@@ -122,25 +126,27 @@ export class PlaywrightBrowserPort implements BrowserPort {
         rt === "media" ||
         rt === "font" ||
         BLOCK_PATTERNS.some((p) => url.includes(p));
+      // eslint-disable-next-line @typescript-eslint/no-unused-expressions -- faithful port of v1 scraper/browser.ts:201
       blocked ? route.abort() : route.continue();
     });
 
     if (cookies && cookies.length > 0) {
       await context.addCookies(
-        cookies.map((c) => ({
-          name: c.name,
-          value: c.value,
-          domain: c.domain,
-          path: c.path,
-          expires: c.expires,
-          httpOnly: c.httpOnly,
-          secure: c.secure,
-          sameSite: c.sameSite,
-        })),
+        // DomainCookie -> Playwright Cookie (leading-dot prefix for subdomain
+        // match) lives in the adapter's cookieMappers.ts per phase-2 §1.2.
+        domainCookiesToPlaywright(cookies),
       );
     }
 
     return mkContext(context);
+  }
+
+  async contextCookies(ctx: ContextHandle): Promise<StoredCookie[]> {
+    const c = asContext(ctx);
+    const raw = await c.cookies();
+    return playwrightCookiesToStored(
+      raw as unknown as import("./cookieMappers.js").PlaywrightCookieRead[],
+    );
   }
 
   async newPage(ctx: ContextHandle): Promise<PageHandle> {
@@ -294,6 +300,64 @@ function pageObject(page: Page): PageHandle {
 
     async bodyInnerText(): Promise<string> {
       return page.evaluate(() => document.body?.innerText ?? "");
+    },
+
+    // ── Phase 4 site-adapter hooks (ADR-P4-A) ────────────────────────────────
+    // All three are named-method evaluate ops; the P4 evaluate-as-string rule
+    // stays enforced by construction - the closures below are the inner Play
+    // driver wiring inside the adapter, never references in browser scope.
+
+    async getAttribute(selector: string, attr: string, fallbackAttr?: string): Promise<string | null> {
+      try {
+        const loc = page.locator(selector).first();
+        const v = await loc.getAttribute(attr, { timeout: 8_000 }).catch(() => null);
+        if (v) return v;
+        if (fallbackAttr) {
+          return await loc.getAttribute(fallbackAttr, { timeout: 8_000 }).catch(() => null);
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    },
+
+    async innerText(selector: string, timeoutMs: number, excludeSelectors: string[] = []): Promise<string | null> {
+      try {
+        const container = page.locator(selector).first();
+        if (excludeSelectors.length > 0) {
+          await container
+            .evaluate((el, sels: string[]) => {
+              sels.forEach((s) => el.querySelectorAll(s).forEach((n) => n.remove()));
+            }, excludeSelectors)
+            .catch(() => {
+              /* best-effort - fall through to raw text if this fails */
+            });
+        }
+        const raw = await container.innerText({ timeout: timeoutMs }).catch(() => null);
+        if (!raw) return null;
+        return raw
+          .split("\n")
+          .map((line) => line.trim())
+          .join("\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim();
+      } catch {
+        return null;
+      }
+    },
+
+    async anchorHrefs(selector: string): Promise<string[]> {
+      // The script is a tiny constant string shipped verbatim. Not a closure
+      // param value closure - avoids esbuild's keepNames __name injection
+      // (read AGENTS.md "page.evaluate() string-constant rule"). The selector
+      // argument is baked into the string via JSON.stringify so the browser
+      // scope sees a literal, never an eval-via-function-arg pattern.
+      const script = `Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((a) => a.href)`;
+      return (await page.evaluate(script)) as string[];
+    },
+
+    async evaluateScript<T>(script: string): Promise<T> {
+      return (await page.evaluate(script)) as T;
     },
 
     url(): string {

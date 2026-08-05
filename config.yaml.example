@@ -1,0 +1,33 @@
+# ── Output ────────────────────────────────────────────────
+defaultOutputDir: ./output
+
+# ── Performance ───────────────────────────────────────────
+defaultConcurrency: 2
+defaultDelayMin: 1200
+defaultDelayMax: 3500
+
+# ── Browser ───────────────────────────────────────────────
+headless: true
+waitUntil: domcontentloaded  # domcontentloaded | load | networkidle
+navigationTimeoutMs: 30000
+
+# ── Stealth (CloakBrowser) ────────────────────────────────
+humanize: false
+humanPreset: default           # default | careful
+fingerprintSeed: null          # null = random every launch
+
+# ── Scraping ──────────────────────────────────────────────
+maxRetries: 3
+
+# ── Metadata defaults ─────────────────────────────────────
+defaultLanguage: en
+defaultAuthor: Unknown
+defaultPublisher: WebNovel Scraper
+
+# ── Logging ───────────────────────────────────────────────
+# At runtime the LOG_LEVEL env var overrides this value; XDG_CONFIG_HOME and
+# XDG_DATA_HOME are also honored for migrations (see docs/05-migration-guide.md §7).
+logLevel: info                 # error | warn | info | debug
+
+# ── UX ────────────────────────────────────────────────────
+askSaveProfile: true

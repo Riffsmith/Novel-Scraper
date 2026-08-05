@@ -1,0 +1,51 @@
+{
+  "id": "session-1",
+  "status": "in-progress",
+  "createdAt": "2026-07-01T00:00:00.000Z",
+  "updatedAt": "2026-07-15T00:00:00.000Z",
+  "domain": "wtr-lab.com",
+  "entryUrl": "https://wtr-lab.com/en/novel/test-novel",
+  "novelTitle": "Test Novel A",
+  "config": {
+    "method": "toc",
+    "tocUrl": "https://wtr-lab.com/en/novel/test-novel",
+    "contentSelector": ".chapter-content",
+    "separateTitle": true,
+    "titleSelector": "h1.chapter-title",
+    "excludeSelectors": [".ad"],
+    "metadata": {
+      "title": "Test Novel A",
+      "author": "Test Author",
+      "language": "en",
+      "coverSource": "none"
+    },
+    "outputDir": "./output",
+    "outputFilename": "test-novel-a",
+    "concurrency": 2,
+    "delayMin": 1200,
+    "delayMax": 3500,
+    "headless": true
+  },
+  "chapterUrls": [
+    "https://wtr-lab.com/en/novel/test-novel/ch1",
+    "https://wtr-lab.com/en/novel/test-novel/ch2",
+    "https://wtr-lab.com/en/novel/test-novel/ch3"
+  ],
+  "completedChapters": [
+    {
+      "index": 1,
+      "title": "Chapter 1",
+      "url": "https://wtr-lab.com/en/novel/test-novel/ch1",
+      "htmlContent": "<p>Content of chapter 1.</p>",
+      "wordCount": 5
+    },
+    {
+      "index": 2,
+      "title": "Chapter 2",
+      "url": "https://wtr-lab.com/en/novel/test-novel/ch2",
+      "htmlContent": "<p>Content of chapter 2.</p>",
+      "wordCount": 5
+    }
+  ],
+  "errors": []
+}
