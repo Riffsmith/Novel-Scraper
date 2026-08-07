@@ -54,17 +54,14 @@ export async function atomicWrite(
   const dir = path.dirname(filePath);
   await h.mkdir(dir, { recursive: true });
 
+  // The tmp file lives in the destination directory so the rename stays on a
+  // single filesystem (a rename across devices fails with EXDEV - e.g. /tmp on
+  // tmpfs vs /home) and remains atomic on POSIX.
   const base = path.basename(filePath);
-  const tmp = path.join(h.tmpdir(), `.${base}.${h.uniqueSuffix()}.tmp`);
+  const tmp = path.join(dir, `.${base}.${h.uniqueSuffix()}.tmp`);
 
-  await h.writeFile(tmp, data, enc);
-
-  // Ensure the destination directory exists before the rename - needed when
-  // the tmpdir is on a different filesystem root than the destination (a
-  // cross-device rename fails with EXDEV; we mirror v1's "ensureDir before
-  // write" guarantee instead). We always do this - idempotent if the dir
-  // exists - so a partial state never surprises us on the recovery path.
   await h.mkdir(dir, { recursive: true });
+  await h.writeFile(tmp, data, enc);
 
   try {
     await h.rename(tmp, filePath);

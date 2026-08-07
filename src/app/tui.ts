@@ -71,6 +71,8 @@ function buildRegistry(): Map<string, Screen> {
   return r;
 }
 
+import { fileURLToPath } from "url";
+
 export async function main(): Promise<void> {
   const log = createWinstonLogger(logger);
   const config = new YamlConfigStore(log);
@@ -101,8 +103,14 @@ export async function main(): Promise<void> {
   await shell.run("main");
 }
 
-main().catch((e) => {
-  console.error("Fatal error booting TUI:");
-  console.error(e);
-  process.exit(1);
-});
+// Auto-boot only when invoked as the entry module (pnpm dev:tui); the v2
+// `tui` subcommand in cli.ts imports this module for `main()` only, so the
+// side-effect must not fire on import (Phase 5 §2.2).
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+if (isMain) {
+  main().catch((e) => {
+    console.error("Fatal error booting TUI:");
+    console.error(e);
+    process.exit(1);
+  });
+}

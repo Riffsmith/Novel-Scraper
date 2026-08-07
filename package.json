@@ -4,19 +4,21 @@
   "description": "Elite TUI-based web novel scraper with EPUB export",
   "type": "module",
   "bin": {
-    "wnscrape": "./dist/index.js"
+    "wnscrape": "./dist/app/cli.js"
   },
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/app/cli.ts",
+    "dev:v1": "tsx src/index.ts",
     "dev:tui": "tsx src/app/tui.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/app/cli.js",
     "clean": "rm -rf dist",
-    "prebuild": "pnpm clean"
+    "gen:schema": "tsx scripts/gen-job-schema.ts",
+    "prebuild": "pnpm clean && pnpm gen:schema"
   },
   "dependencies": {
     "@clack/prompts": "1.1.0",
@@ -48,11 +50,13 @@
     "@typescript-eslint/eslint-plugin": "^8.65.0",
     "@typescript-eslint/parser": "^8.65.0",
     "@vitest/coverage-v8": "^4.1.10",
+    "ajv": "^8.20.0",
     "eslint": "^10.8.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.65.0",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "zod-to-json-schema": "^3.25.2"
   },
   "engines": {
     "node": ">=20.0.0",
