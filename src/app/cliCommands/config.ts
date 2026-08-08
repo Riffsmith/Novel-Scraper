@@ -14,9 +14,8 @@
 
 import { YamlConfigStore } from "../../adapters/config-yaml/YamlConfigStore.js";
 import { appConfigSchema } from "../../adapters/schemas/appConfig.js";
-import { createWinstonLogger } from "../../adapters/logger-winston/WinstonLogger.js";
+import { createDefaultWinstonLogger } from "../../adapters/logger-winston/WinstonLogger.js";
 import { createSilentLogger } from "../../adapters/cli-json/silentLogger.js";
-import logger from "../../logger/index.js";
 import type { Logger } from "../../ports/Logger.js";
 import type { AppConfig } from "../../core/domain/AppConfig.js";
 import { DEFAULT_CONFIG } from "../../core/domain/AppConfig.js";
@@ -28,7 +27,7 @@ function newLog(json?: boolean): Logger {
   // §1.4 / T11: under --json the winston console transport would interleave
   // pretty lines into the envelope - swap to a silent Logger port so the ONLY
   // stdout output is the JSON envelope itself.
-  return json ? createSilentLogger() : createWinstonLogger(logger);
+  return json ? createSilentLogger() : createDefaultWinstonLogger();
 }
 
 /** Keys the schema knows about - used for the `unknown key` fast-path. */

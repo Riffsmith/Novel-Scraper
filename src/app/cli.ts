@@ -196,12 +196,14 @@ cli
 
 cli.help();
 
-// Wrap parse(): winston's exceptionHandlers (logger/index.ts) swallow
-// uncaughtException at the top level for the v1 TUI's logging, which would
-// silently swallow cac parse errors and other top-level exceptions from the
-// CLI's sync parse path. Catch here so a cac `Unused args` / `Unknown option`
-// surfaces as a proper non-zero exit code; under --json we emit a JSON
-// error envelope so consumers don't get an empty stdout with exit 0.
+// Wrap parse(): a future-per-invocation winston instance built by
+// createDefaultWinstonLogger() (adapters/logger-winston) registers its
+// exceptionHandlers INSIDE each command handler - i.e. AFTER cli.parse() has
+// already returned - so a cac parse error thrown from the sync parse path is
+// never touched by winston's top-level handler. Catch here so a cac `Unused
+// args` / `Unknown option` surfaces as a proper non-zero exit code; under
+// --json we emit a JSON error envelope so consumers don't get an empty stdout
+// with exit 0. (See ADR-P6-B for the logger factory decision.)
 try {
   cli.parse();
 } catch (e) {

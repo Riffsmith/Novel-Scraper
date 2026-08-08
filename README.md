@@ -1,334 +1,121 @@
-# 📖 WebNovel Scraper
+# WebNovel Scraper
 
-**Elite TUI-based web novel scraper → EPUB packager**
+Personal CLI + TUI scraper that pulls a web novel and packages it as a polished, standard-compliant EPUB 3. Powered by [CloakBrowser](https://www.npmjs.com/package/cloakbrowser) for fingerprint-coherent stealth browser sessions, with a concurrency-controlled queue, resumable checkpoints, and named per-domain cookie profiles.
 
-Playwright-powered, stealth-layered, concurrency-controlled scraper with a clean terminal UI. Scrapes any web novel and packages it into a polished, standard-compliant EPUB 3 file.
-
----
-
-## Features
-
-| Capability                 | Details                                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------------------------ |
-| **Two scraping modes**     | TOC URL auto-discovery _or_ sequential next-button navigation                                    |
-| **Three locator kinds**    | CSS selector, XPath expression, or Regex text match for next-button                              |
-| **Fallback locator chain** | Priority-ordered list; fallback fires only when every higher locator fails                       |
-| **Full stealth**           | `playwright-extra` + stealth plugin — webdriver flag, canvas noise, plugin spoofing, permissions |
-| **Resource blocking**      | Ads, trackers, fonts, media blocked at network layer                                             |
-| **Concurrency queue**      | `p-queue` — N parallel browser pages with exponential-backoff retry                              |
-| **Human-like delays**      | Configurable jitter range between every request                                                  |
-| **Smart extraction**       | Cheerio + `sanitize-html`; CSS and XPath selectors everywhere                                    |
-| **EPUB 3 output**          | Nav document, NCX (EPUB 2 compat), OPF, per-chapter XHTML, CSS, cover, title page                |
-| **Cookie store**           | Per-domain persistent cookies in XDG_DATA_HOME — paste a `Cookie:` header once, reuse forever    |
-| **Site profiles**          | Per-domain extraction presets saved after first scrape — selectors pre-fill on return visits     |
-| **Global config**          | XDG_CONFIG_HOME/webnovel-scraper/config.json — fully documented, editable in-app or by hand      |
-| **TUI**                    | `enquirer` prompts, `ora` spinners, `cli-progress` bars, `chalk` colour                          |
-| **Logging**                | `winston` — pretty console + rotating file transports, level controlled from settings            |
+- One binary, two entry points: the interactive Clack shell (`wnscrape tui`) and the scriptable CLI (`wnscrape <command> [--json]`).
+- `playwright-core` only under the hood (ADR-001); CloakBrowser supplies fingerprinting, the app layer owns resource blocking + cookie injection + headers.
 
 ---
 
-## Requirements
+## Quick start
 
-- **Node.js** ≥ 18.0
-- **pnpm** ≥ 9.0
-- Chromium (installed automatically by Playwright)
-
----
-
-## Installation
+Requires Node.js >= 20 (see `.nvmrc`) and pnpm >= 9.
 
 ```bash
-git clone <repo-url> && cd webnovel-scraper
-
 pnpm install
-pnpm exec playwright install chromium
-
-# Optional: inspect config location before first run
-node -e "import('./src/config/appConfig.js').then(m => console.log(m.CONFIG_FILE))"
+pnpm dev doctor          # verify binary + stores; exit 2 = warnings-only, the expected fresh-install state
+pnpm dev run --job examples/job.yaml
 ```
 
----
-
-## Usage
+Open the interactive shell instead:
 
 ```bash
-# Development (TypeScript, no build step)
-pnpm dev
-
-# Production
-pnpm build && pnpm start
-
-# Global install
-pnpm build && npm link   # adds `wnscrape` to PATH
-wnscrape
+pnpm dev tui
+# or after a build:
+pnpm build && pnpm start tui
 ```
 
 ---
 
-## Main Menu
+## Two entry points
 
-```
-  What would you like to do?
-  ❯ 📖  Start a new scrape → EPUB
-    🍪  Manage saved cookies
-    ⚙   Settings & site profiles
-    ✖   Quit
-```
+| Mode | Command | When to use |
+|------|---------|-------------|
+| Interactive Clack shell | `wnscrape tui` | First-time scrapes, browser login for cookies, profile/library management, walking through a TOC picker, debugging selectors live |
+| Scriptable CLI | `wnscrape <command> [--json]` | CI, cron, batch. `--json` emits a single tagged-union envelope on stdout (see `docs/phase-5/adr.md` ADR-P5-A) so consumers can `jq '.ok'`-gate |
 
----
+### CLI command surface
 
-## Scraping Modes
+| Command | Purpose |
+|---------|---------|
+| `wnscrape run --job <f> [--json] [--resume <id>] [--cookies-file <f>] [--validate-only]` | Run a scrape job from a YAML file. `--validate-only` parses the job and exits before booting the browser. `--json` emits a `RunResultJson` envelope with chapters, words, errors, session. |
+| `wnscrape resume <id>` | Alias for `run --resume <id>`; reads the session's embedded config (no `--job` needed). |
+| `wnscrape sessions ls [--json]` / `sessions rm <id>` | Resume checkpoints: list or delete. |
+| `wnscrape cookies ls [--json]` / `cookies add --file <f> --domain <d> --profile <p> [--label <l>]` / `cookies rm --domain <d> [--all]` | Per-domain named cookie profiles. `--file` accepts a v1 cookie-snippet JSON or a raw `Cookie:` header string. |
+| `wnscrape profiles ls [--json]` / `profiles rm --domain <d>` | Site extraction presets saved after a first run. |
+| `wnscrape config get [--key <k>] [--json]` / `config set <key> <value>` / `config reset` | Global config (`waitUntil`, `defaultConcurrency`, `humanize`, etc.). |
+| `wnscrape doctor [--json] [--fix]` | Validate binary + every store; `--fix` stamps `schemaVersion` on out-of-date stores. |
+| `wnscrape tui` | Launch the interactive Clack shell. |
 
-### TOC URL
-
-Point the scraper at the novel's chapter-list page. It loads the page (following TOC pagination if present), extracts and filters all same-origin chapter links, then lets you review/edit the list before scraping.
-
-### Sequential navigation
-
-Provide the first and last chapter URLs plus a locator for the "Next Chapter" button. The scraper walks the chain collecting URLs, then scrapes in parallel.
-
----
-
-## Next-Button Locator Kinds
-
-All three kinds are available for the primary locator and any fallbacks.
-
-### CSS selector
-
-Standard CSS. The most reliable option when the button has a unique class or `rel` attribute.
-
-```
-.btn-next
-a[rel="next"]
-#nextchap
-p.navigation > a:last-child
-```
-
-### XPath expression
-
-Use when there is no good CSS hook but the DOM structure is predictable.
-
-```
-//a[contains(@class,"next")]
-//p[@class="has-text-align-center"]/a[last()]
-//a[@title and contains(@title,"Next")]
-```
-
-Enter with or without the `xpath=` prefix — both are accepted.
-
-### Regex text match
-
-Scans every `<a href>` on the page and matches against the element's **visible decoded text** and **title attribute**. Use when the button has no stable class/id but always has the same label.
-
-```
->>                        matches the >> link text literally
-^\s*>>\s*$               anchored: entire link text is >>
-Next\s*Chapter            matches "Next Chapter", "NextChapter", etc.
-下一章                    CJK — use flag: u or iu
-```
-
-> **Important:** The regex tests `a.textContent` (decoded, normalised), not HTML source. Do not write `&gt;&gt;` or `<a href=...>` patterns — write what you would _see_ in the browser.
-
-Recommended flags: `i` for Latin text (default), `u` for Unicode/CJK, `iu` for both.
-
-### Fallback chain
-
-After entering the primary locator you can add fallbacks. On each page the engine tries them in order; the first match wins. A warning is logged whenever index > 0 fires, so you can audit which chapters used a different layout.
+Every read-only command accepts `--json`. The shared envelope shape (`{ok, command, data}` / `{ok:false, command, error}`) is the published contract for CI - see `docs/phase-5/adr.md` ADR-P5-A.
 
 ---
 
-## Content & Title Selectors
+## Job files
 
-All selector fields (content container, title element, exclusions) accept both CSS and XPath:
+A job file describes one scrape. Schema published at `schemas/job.schema.json` (regenerated by `pnpm gen:schema` on every prebuild). Example in `examples/job.yaml`:
 
-```
-CSS:   .chapter-content
-CSS:   #chapter-body
-XPath: //div[@class="chapter-body"]
-XPath: xpath=//article/div[1]
-```
-
----
-
-## Cookie Manager
-
-Reach via main menu → **Manage saved cookies**.
-
-Cookies are stored as **named profiles per domain** in `$XDG_DATA_HOME/webnovel-scraper/cookies.json` (Linux), `~/Library/Application Support/webnovel-scraper/cookies.json` (macOS), or `%APPDATA%\webnovel-scraper\cookies.json` (Windows). A domain can have multiple profiles — e.g. `default` and `alt-account` — each with its own independent cookie jar. Profiles are scoped strictly per-domain: a profile named `main` on one site has nothing to do with a profile named `main` on another.
-
-**Two ways to populate a profile:**
-
-1. **Log in via browser (recommended)** — an isolated, headed browser window opens. Log in as you normally would with your mouse and keyboard, then press Enter in the terminal to capture every cookie from that session. This **replaces** the profile's full cookie set — a fresh login is authoritative.
-2. **Manual entry** — paste a raw `Cookie:` header, or type name/value pairs by hand. This **merges** into the profile's existing cookies by name, same as before.
-
-**Adding cookies via browser login:**
-
-1. Cookie Manager → select or add a domain → **Add a new cookie profile** (or open an existing profile and choose the capture option)
-2. Enter the page you want to open first (defaults to the domain's homepage)
-3. Log in normally in the window that opens
-4. Press Enter in the terminal — the session's cookies are captured and previewed before saving
-
-**Adding cookies manually (unchanged from before):**
-
-1. Cookie Manager → select a domain → select or create a profile → **Paste raw Cookie: header** or **Add or update a cookie**
-2. Paste the value of the `Cookie:` request header (DevTools → Network → any request → Headers → Cookie), or enter name/value pairs one at a time
-
-**Profile selection at scrape time:**
-
-- Zero profiles for the domain → scrape proceeds with no cookies, same as always
-- Exactly one profile → auto-loaded, no extra prompt
-- Multiple profiles → you're asked which one to use (or to proceed with none), with cookie count and last-used date shown for each
-
-Profile names are restricted to lowercase letters, numbers, `_`, and `-`.
-
----
-
-## Site Profiles
-
-After successfully scraping a domain for the first time, the scraper asks whether to save the extraction settings as a reusable profile (controlled by `askSaveProfile` in global settings).
-
-On return visits, the profile pre-fills:
-
-- Scraping method
-- Content selector, title toggle, title selector, exclusion selectors
-- Next-button locators (shown with use/override choice)
-- Per-site performance overrides (concurrency, delay range)
-
-Profiles are stored in `$XDG_DATA_HOME/webnovel-scraper/site-profiles.json`.
-
-Manage profiles via main menu → **⚙ Settings → 🗂 Site Profiles**: view, edit selectors, edit performance, or delete.
-
----
-
-## Global Configuration
-
-File: `$XDG_CONFIG_HOME/webnovel-scraper/config.json`  
-(Linux default: `~/.config/webnovel-scraper/config.json`)
-
-Created automatically on first run with all defaults. Edit in-app via **⚙ Settings → 🌐 Global Settings** or open the JSON file directly. Unknown keys are preserved across in-app writes.
-
-| Setting               | Default            | Description                                                                |
-| --------------------- | ------------------ | -------------------------------------------------------------------------- |
-| `defaultOutputDir`    | `./output`         | Where EPUBs are saved                                                      |
-| `defaultConcurrency`  | `2`                | Parallel browser pages (1–5)                                               |
-| `defaultDelayMin`     | `1200`             | Min request jitter (ms)                                                    |
-| `defaultDelayMax`     | `3500`             | Max request jitter (ms)                                                    |
-| `headless`            | `true`             | `false` = visible browser window                                           |
-| `waitUntil`           | `domcontentloaded` | Navigation event to wait for (`domcontentloaded` / `load` / `networkidle`) |
-| `navigationTimeoutMs` | `30000`            | Page load timeout (ms)                                                     |
-| `maxRetries`          | `3`                | Failed chapter retries before drop                                         |
-| `defaultLanguage`     | `en`               | ISO 639-1 code pre-filled in metadata                                      |
-| `defaultAuthor`       | `Unknown`          | Author pre-filled in metadata                                              |
-| `defaultPublisher`    | `WebNovel Scraper` | Publisher pre-filled in metadata                                           |
-| `logLevel`            | `info`             | Console log level (`error`/`warn`/`info`/`debug`)                          |
-| `askSaveProfile`      | `true`             | Offer to save a site profile after first scrape                            |
-
-`waitUntil` values:
-
-- `domcontentloaded` — fastest, sufficient for most static/SSR sites
-- `load` — waits for all sub-resources (images, fonts)
-- `networkidle` — waits until no network activity for 500 ms; use for heavy SPA/React sites
-
----
-
-## EPUB Output Structure
-
-```
-output.epub
-├── mimetype                         (uncompressed, EPUB OCF spec)
-├── META-INF/container.xml           (correct OCF namespace — works in Readest, Sigil, Calibre)
-└── OEBPS/
-    ├── content.opf                  (EPUB 3 package + manifest + spine)
-    ├── nav.xhtml                    (EPUB 3 navigation document)
-    ├── toc.ncx                      (EPUB 2 backward compat)
-    ├── title.xhtml                  (title page + synopsis)
-    ├── cover.xhtml / images/cover.jpg
-    ├── styles/style.css             (reader-optimised typography)
-    └── chapters/
-        ├── chapter-1.xhtml
-        └── …
+```yaml
+method: toc                       # toc | sequential
+tocUrl: https://wtr-lab.com/series/some-novel/?tab=toc
+outputDir: ./output
+outputFilename: some-novel
+concurrency: 2
+delayMin: 1200
+delayMax: 3500
+contentSelector: ".chapter-content"
+separateTitle: false
+excludeSelectors: []
+metadata:
+  title: "Some Novel"
+  author: "Unknown"
+  language: "en"
+  coverSource: "none"
+output:
+  epub: true
 ```
 
-Compatible with: Readest, Calibre, Apple Books, KOReader, Moon+ Reader, Thorium, and any EPUB 3 reader.
+`--validate-only` parses it and exits before booting the browser - good for CI checks.
 
 ---
 
-## Stealth Stack
+## Data directory layout
 
-| Layer                            | Detail                                                        |
-| -------------------------------- | ------------------------------------------------------------- |
-| `puppeteer-extra-plugin-stealth` | webdriver flag, plugin list, permissions, iframe checks       |
-| Canvas noise                     | Subtle pixel perturbation on `toDataURL`                      |
-| Real UA rotation                 | Current Chrome / Firefox / Safari / Edge user-agents          |
-| Viewport rotation                | Common desktop resolutions                                    |
-| Locale + timezone                | `en-US` / `America/New_York`                                  |
-| Resource blocking                | Media, fonts, analytics, ad networks aborted at context level |
-| `sec-ch-ua` headers              | Matched to spoofed UA                                         |
-| Request jitter                   | Configurable random delay per task                            |
-| Concurrency cap                  | Max 5 parallel pages (default 2)                              |
+All persistent user data lives under XDG-standard directories, resolved identically by every store via `resolveDataDir()` / `resolveConfigDir()`:
 
----
+| Path | Contents |
+|------|----------|
+| `$XDG_CONFIG_HOME/webnovel-scraper/config.yaml` | Global config (YAML; migrated from v1's `config.json` on first v2 run). See `config.yaml.example`. |
+| `$XDG_DATA_HOME/webnovel-scraper/cookies.json` | Per-domain named cookie profiles (machine-only JSON, auto-migrates from v1's flat-array shape). |
+| `$XDG_DATA_HOME/webnovel-scraper/site-profiles.json` | Site extraction presets saved after a first run. |
+| `$XDG_DATA_HOME/webnovel-scraper/sessions/*.json` | Resume checkpoints; deleted only after the EPUB build succeeds. |
+| `./output/*.epub` | Built EPUBs. |
+| `./logs/*.log` | `combined.log`, `error.log`, `exceptions.log`, `rejections.log` (rotating). |
 
-## Logs
-
-All runs write to `./logs/`:
-
-| File             | Content                      |
-| ---------------- | ---------------------------- |
-| `combined.log`   | Full JSON log (all levels)   |
-| `error.log`      | Errors only                  |
-| `exceptions.log` | Uncaught exceptions          |
-| `rejections.log` | Unhandled promise rejections |
+macOS uses `~/Library/Application Support/webnovel-scraper/`; Windows uses `%APPDATA%/webnovel-scraper/`. See `docs/05-migration-guide.md` for the full file map and the zero-step v1 -> v2 migration story.
 
 ---
 
-## Common Selector Cheatsheet
+## Cookies, sessions, resume
 
-```
-Content area:
-  .chapter-content          Royal Road, ScribbleHub
-  #chapter-container        Wuxiaworld
-  article.entry-content     WordPress novels
-  //div[@id="chr-content"]  XPath alternative
-
-Title element:
-  .chapter-title
-  h1.title
-  //h1[@class="chapter-heading"]
-
-Next button:
-  a[rel="next"]             semantic next link
-  .btn-next                 generic class
-  >>                        regex — link text is ">>"
-  Next\s*Chapter            regex — link text contains "Next Chapter"
-  //p/a[last()]             XPath — last anchor in a paragraph
-
-Exclusions:
-  .ads, .adsbygoogle        advertisements
-  .author-note              skip author notes
-  .translator-note          skip translator notes
-  #donation-banner          donation prompts
-  //div[@class="ad-wrap"]   XPath exclusion
-```
+- **Cookies** are named profiles per domain (`default`, `alt-account`, ...). The TUI's CookieManager opens a headed browser window so you log in with mouse + keyboard, then captures the session; the CLI's `cookies add --file <f>` accepts a v1 snippet JSON or a raw `Cookie:` header. Zero profiles for a domain means the scrape proceeds cookieless; one profile auto-loads; multiple prompt a picker.
+- **Sessions** land in `sessions/<uuid>.json` after each chapter commits to the queue. A partial or failed run never deletes its checkpoint - the session file is removed only after the EPUB build succeeds. `wnscrape sessions ls` lists resumable ones; `run --resume <id>` continues from where it stopped.
+- **Site profiles** are per-domain extraction presets (selectors, concurrency, delay) saved after a successful first run, so return visits skip the wizard. `askSaveProfile` in global config toggles the offer.
 
 ---
 
-## Troubleshooting
+## Adding a site adapter
 
-**"No package document defined" in EPUB reader** — Fixed. The OCF container namespace is now the exact string required by strict readers like Readest.
+Two built-in adapters ship: WTR-Lab and NovelFire. The site-adapter authoring guide is at `docs/sites/adding-a-site.md`, and the evidence cookbook for the two built-ins is at `docs/02-site-adapters.md` (update both in the same commit that adds or fixes an adapter).
 
-**No content extracted** — The `contentSelector` doesn't match. Open DevTools, right-click the chapter text, Inspect, find the wrapper element's class or id.
+---
 
-**0 links on TOC** — The page may require JS to render. Try `waitUntil: networkidle` in global settings. Or switch to sequential mode.
+## Contributing
 
-**Regex next-button not matching** — Regex tests `a.textContent` (decoded visible text), not HTML source. Enter `>>` not `&gt;&gt;`. Enter `Next Chapter` not `<a>Next Chapter</a>`.
-
-**Blocked / CAPTCHA** — Reduce concurrency to `1`, increase delays, set `headless: false` to debug visually.
-
-**Cookies not working** — Verify the domain key in `cookies.json` matches the bare hostname (no `www.`, no protocol). The store normalises automatically.
+See `CONTRIBUTING.md` for the architecture rules (hexagon import boundaries, the `page.evaluate` string-constant rule, CloakBrowser via `ensureBinary()` + `buildLaunchOptions()`, the three-tier challenge detection) and the pre-commit checks.
 
 ---
 
 ## License
 
-MIT — use freely, scrape responsibly.
+MIT - use freely, scrape responsibly.

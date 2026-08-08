@@ -29,7 +29,7 @@ import { YamlConfigStore } from "../adapters/config-yaml/YamlConfigStore.js";
 import { JsonCookieStore } from "../adapters/store-json/JsonCookieStore.js";
 import { JsonProfileStore } from "../adapters/store-json/JsonProfileStore.js";
 import { JsonSessionStore } from "../adapters/store-json/JsonSessionStore.js";
-import { createWinstonLogger } from "../adapters/logger-winston/WinstonLogger.js";
+import { createDefaultWinstonLogger } from "../adapters/logger-winston/WinstonLogger.js";
 import { clackPromptProvider } from "../adapters/ui-clack/clackPrompts.js";
 import { Shell } from "../adapters/ui-clack/Shell.js";
 import { LiveTaskRegistry } from "../adapters/ui-clack/TaskRegistry.js";
@@ -48,7 +48,7 @@ import { SettingsScreen } from "../adapters/ui-clack/screens/SettingsScreen.js";
 import { LibraryScreen } from "../adapters/ui-clack/screens/LibraryScreen.js";
 import { ErrorScreen } from "../adapters/ui-clack/screens/ErrorScreen.js";
 
-import logger from "../logger/index.js";
+import { fileURLToPath } from "url";
 
 function buildRegistry(): Map<string, Screen> {
   const r = new Map<string, Screen>();
@@ -71,10 +71,8 @@ function buildRegistry(): Map<string, Screen> {
   return r;
 }
 
-import { fileURLToPath } from "url";
-
 export async function main(): Promise<void> {
-  const log = createWinstonLogger(logger);
+  const log = createDefaultWinstonLogger();
   const config = new YamlConfigStore(log);
   const cookies = new JsonCookieStore(log);
   const profiles = new JsonProfileStore(log);

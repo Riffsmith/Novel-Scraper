@@ -9,12 +9,11 @@
 
 import { loadJobFile } from "../loadJobFile.js";
 import { runJob } from "../runJob.js";
-import { createWinstonLogger } from "../../adapters/logger-winston/WinstonLogger.js";
+import { createDefaultWinstonLogger } from "../../adapters/logger-winston/WinstonLogger.js";
 import { createSilentLogger } from "../../adapters/cli-json/silentLogger.js";
 import { NoopUIAdapter } from "../../adapters/ui-noop/NoopUIAdapter.js";
 import { CollectingUIAdapter } from "../../adapters/cli-json/CollectingUIAdapter.js";
 import { JsonSessionStore } from "../../adapters/store-json/JsonSessionStore.js";
-import logger from "../../logger/index.js";
 import type { Logger } from "../../ports/Logger.js";
 import type { ScrapeEvent } from "../../core/services/events.js";
 import type { JsonResultError } from "../../adapters/cli-json/envelope.js";
@@ -48,7 +47,7 @@ function commonLog(json?: boolean): Logger {
   // §1.4 / T11: under --json the winston console transport would interleave
   // pretty lines into the envelope; swap to a silent Logger port so the
   // ONLY stdout output is the JSON envelope itself.
-  return json ? createSilentLogger() : createWinstonLogger(logger);
+  return json ? createSilentLogger() : createDefaultWinstonLogger();
 }
 
 /** Convert the recorded ScrapeEvent list + ScrapeResult into the JSON shape. */

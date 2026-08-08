@@ -867,9 +867,9 @@ describe("T12 — tui subcommand wires app/tui.ts:main", () => {
   });
 });
 
-// ── T13: bin repoint + dev:v1 ─────────────────────────────────────────────
+// ── T13: bin repoint + dev script ─────────────────────────────────────────
 
-describe("T13 — package.json bin repoint + dev / dev:v1 scripts", () => {
+describe("T13 — package.json bin repoint + dev script", () => {
   it("bin.wnscrape points at the v2 CLI build output", async () => {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
     expect(pkg.bin?.wnscrape).toBe("./dist/app/cli.js");
@@ -877,10 +877,6 @@ describe("T13 — package.json bin repoint + dev / dev:v1 scripts", () => {
   it("scripts.dev runs tsx src/app/cli.ts (v2 == default)", async () => {
     const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
     expect(pkg.scripts.dev).toContain("src/app/cli.ts");
-  });
-  it("scripts.dev:v1 runs tsx src/index.ts (v1 oracle still reachable)", async () => {
-    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8"));
-    expect(pkg.scripts["dev:v1"]).toContain("src/index.ts");
   });
   it("pnpm build produces dist/app/cli.js", async () => {
     // Sanity check the existing build output (the suite's prebuild ran).

@@ -1,6 +1,6 @@
 {
   "name": "webnovel-scraper",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Elite TUI-based web novel scraper with EPUB export",
   "type": "module",
   "bin": {
@@ -8,7 +8,6 @@
   },
   "scripts": {
     "dev": "tsx src/app/cli.ts",
-    "dev:v1": "tsx src/index.ts",
     "dev:tui": "tsx src/app/tui.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
@@ -26,16 +25,11 @@
     "cac": "^7.0.0",
     "chalk": "^5.3.0",
     "cheerio": "^1.0.0",
-    "cli-progress": "^3.12.0",
     "cloakbrowser": "latest",
-    "enquirer": "^2.4.1",
     "got": "^14.4.2",
-    "ora": "^8.1.1",
     "p-queue": "^8.0.1",
-    "playwright": "^1.49.0",
     "playwright-core": "1.61.1",
     "sanitize-html": "^2.13.1",
-    "slugify": "^1.6.6",
     "uuid": "^11.0.3",
     "winston": "^3.17.0",
     "yaml": "^2.9.0",
@@ -43,7 +37,6 @@
   },
   "devDependencies": {
     "@types/archiver": "^6.0.3",
-    "@types/cli-progress": "^3.11.6",
     "@types/node": "^22.10.1",
     "@types/sanitize-html": "^2.13.0",
     "@types/uuid": "^10.0.0",

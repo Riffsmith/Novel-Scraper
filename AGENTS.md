@@ -6,24 +6,21 @@
   novels and packages them as EPUB 3 files. Playwright/CloakBrowser-powered scraping,
   concurrency-controlled queue, resumable sessions, named per-domain cookie profiles.
 - Requires Node.js >= 20 (see `.nvmrc` = 22), pnpm >= 9.
-- **Mid-migration.** v1 is a working monolith (`src/index.ts`, `src/scraper|queue|epub|sessions|tui`).
-  v2 is a hexagonal rewrite (`src/core/`, `src/ports/`, `src/adapters/`, `src/app/`) landing in
-  phases — see `docs/04-implementation-roadmap.md` for the phase list and
-  `docs/phase-*/readme.md` + `docs/phase-*/adr.md` + `docs/phase-*/deviation-log.md` for what
+- **v2.0.0 shipped.** The codebase is a clean hexagonal layout (`src/core/`, `src/ports/`,
+  `src/adapters/`, `src/app/`) — see `docs/04-implementation-roadmap.md` for the full phase list
+  and `docs/phase-*/readme.md` + `docs/phase-*/adr.md` + `docs/phase-*/deviation-log.md` for what
   each phase actually shipped vs. deviated from. **Always check the latest phase's deviation
   log before assuming a design doc reflects the real code** — implementation details (e.g.
   CloakBrowser's actual npm API) routinely differ from the original design doc.
-- v1 code under `src/scraper/`, `src/queue/`, `src/epub/`, `src/sessions/`, `src/tui/` is the
-  **reference oracle** for parity tests and stays untouched until the Phase 6 cleanup pass.
-  Never "clean up" or refactor v1 files as a side effect of unrelated v2 work.
 
 **Local dev commands:**
 
-- `pnpm dev` — run v1 TUI directly via `tsx src/index.ts`
+- `pnpm dev` — run the v2 CLI directly via `tsx src/app/cli.ts` (use `pnpm dev tui` for the
+  interactive Clack shell)
 - `pnpm typecheck` — `tsc --noEmit`
 - `pnpm test` / `pnpm test:watch` — vitest (`tests/**/*.test.ts`)
 - `pnpm build` — `tsc` → `dist/`
-- `pnpm start` — run built output (`node dist/index.js`)
+- `pnpm start` — run built output (`node dist/app/cli.js`)
 - `docker compose run --rm wns` — daily containerized run command
 - Acceptance tests that spin up the real CloakBrowser binary are gated behind
   `CLOAKBROWSER_BINARY_AVAILABLE=1` (see `tests/acceptance.test.ts`) — do not assume they run in
@@ -47,16 +44,17 @@ src/app/       composition root — wires adapters into core (runJob.ts, cli.ts,
   (`core/services/events.ts`) emitted through `UIAdapter.emit()` — never `console.log`,
   `ora`, or `cli-progress` calls inside `core/`.
 - When adding a new cross-boundary type (cookies, job config, sessions), define it in
-  `core/domain/`, not inline in an adapter or in `src/types.ts` (which is v1-only).
-- Before writing new v2 code, check whether the equivalent v1 module already encodes the
-  correct behavior (challenge detection thresholds, retry backoff math, checkpoint throttle
-  interval, etc.) — v2 services are **ports of v1 logic**, not new designs. Deviating from v1
-  behavior requires a deviation-log entry, not a silent change.
+  `core/domain/`, not inline in an adapter.
+- The challenge detection thresholds, retry backoff math, checkpoint throttle interval, etc.
+  were ported line-for-line from v1 into the v2 services. Deviating from that behavior (e.g.
+  shortening `CHALLENGE_BACKOFF_MS`) requires a deviation-log entry against the relevant
+  phase design doc, not a silent change.
 
 ## Hard constraints (never violate these)
 
-- **`playwright-core` only in new code** — never `playwright` (ADR-001). `playwright` stays a
-  dependency solely because v1 imports it; v2 code must not add new imports of it.
+- **`playwright-core` only in new code** — never `playwright` (ADR-001). v2 code must never
+  add a new import of `playwright`; the `playwright` dep was removed in Phase 6 (ADR-001). If
+  a new import appears, the `tests/phase-6-sweep.test.ts` structural assertion fails.
 - **`page.evaluate()` string-constant rule.** Any script sent into the browser context must be a
   plain string constant, never a function reference or a closure with named inner functions.
   tsx/esbuild's `keepNames` transform injects a `__name()` helper into the function's source text
@@ -65,26 +63,18 @@ src/app/       composition root — wires adapters into core (runJob.ts, cli.ts,
   `evaluate()`** — every browser-side operation is a named method, so this rule is enforced by
   construction. If a new browser-side operation is needed, add a named `PageHandle` method and
   implement it in `PlaywrightBrowserPort.ts` (string-based) — do not thread a closure through.
-- **Session files are deleted only after the EPUB build succeeds**, whether v1
-  (`sessions/store.ts`) or v2 (`JsonSessionStore` via `ScrapeService.run`). A partial/failed
-  scrape must always leave a resumable checkpoint on disk.
+- **Session files are deleted only after the EPUB build succeeds** (`JsonSessionStore` via
+  `ScrapeService.run`). A partial/failed scrape must always leave a resumable checkpoint on
+  disk.
 - **CloakBrowser integration goes through `ensureBinary()` + `buildLaunchOptions()`**
   (`cloakbrowser` npm package), never hand-rolled launch args (ADR-006). Never set
   `userAgent`, `viewport`, or `addInitScript` on a CloakBrowser context — these fight its
-  coherent fingerprint profile (documented in `scraper/browser.ts` and
-  `PlaywrightBrowserPort.ts`).
+  coherent fingerprint profile (documented in `PlaywrightBrowserPort.ts`).
 - **All persistent user data lives under XDG-standard directories** —
   `XDG_DATA_HOME` for cookies/profiles/sessions, `XDG_CONFIG_HOME` for app config — resolved by
   the _same_ `resolveDataDir()`/`resolveConfigDir()` logic in every store. Getting this wrong
-  means v2 writes to a different directory than v1 reads, which is the worst-case migration bug
-  (see `docs/05-migration-guide.md` §1).
-- **`enquirer@2.4.1` is pinned** (v1 TUI only). Empirically verified, not just read from source:
-  `require("enquirer").prompt` returns a new object on every access (so a listener attached to
-  one instance is invisible to prompts built via another), and a cancelled prompt always rejects
-  with a bare empty string `''`, never the triggering key. `tui/keys.ts` patches
-  `Enquirer.prototype.ask` once at boot for exactly this reason — don't add a second, per-call
-  patch elsewhere. This whole file is deleted in Phase 3 when Enquirer is replaced by
-  `@clack/prompts` (ADR-002) — don't invest in extending it further.
+  means a store writes to a different directory than the others read, which is the worst-case
+  migration bug (see `docs/05-migration-guide.md` §1).
 
 ## Data & migration compatibility
 
@@ -122,14 +112,15 @@ against an existing v1 data directory with **zero manual steps and zero data los
   phrases like "just a moment" can never false-trigger. Preserve this ordering and the length
   gate in any port of this logic.
 - `SecurityChallengeError` is a load-bearing type, not an implementation detail: the queue
-  (`ScrapeService`/`queue/index.ts`) applies a distinct, longer backoff multiplier
-  (`CHALLENGE_BACKOFF_MS`, 45s) when a retry was caused by a stuck challenge vs. an ordinary
-  error. Don't collapse this into a generic error path.
-- New site adapters implement `SiteAdapter` (`sites/types.ts`): `matches()` as a hostname regex
-  test (never a substring test), `getTocUrl()`, `scrapeMetadata()`, `scrapeChapterLinks()`, and
-  the four `default*` selector fields. Always de-dupe chapter links and enforce a hard cap.
-  Follow the checklist in `docs/02-site-adapters.md` §3 and update that doc in the same commit
-  that adds or fixes an adapter — it's the only place site-specific selector evidence lives.
+  (`ScrapeService` at `core/services/ScrapeService.ts`) applies a distinct, longer backoff
+  multiplier (`CHALLENGE_BACKOFF_MS`, 45s) when a retry was caused by a stuck challenge vs. an
+  ordinary error. Don't collapse this into a generic error path.
+- New site adapters implement `SiteAdapter` (`core/domain/SiteAdapter.ts`): `matches()` as a
+  hostname regex test (never a substring test), `getTocUrl()`, `scrapeMetadata()`,
+  `scrapeChapterLinks()`, and the four `default*` selector fields. Always de-dupe chapter links
+  and enforce a hard cap. Follow the checklist in `docs/sites/adding-a-site.md` (the
+  contributor guide) and update `docs/02-site-adapters.md` in the same commit that adds or fixes
+  an adapter - it's the only place site-specific selector evidence lives.
 
 ## Testing
 
@@ -143,9 +134,10 @@ against an existing v1 data directory with **zero manual steps and zero data los
 - Resume/checkpoint tests must assert on **behavior**, not implementation: e.g. that
   already-completed chapter URLs are never re-visited (`browser.visitedUrls` in
   `tests/scrape-service-resume.test.ts`), not just that the function returns without throwing.
-- New adapters need parity tests against the v1 reference oracle where one exists (EPUB
-  structure, cookie-store migration, session round-trip) — see `tests/epub-archiver.test.ts`
-  and `tests/session-store.test.ts` as the pattern to follow.
+- New adapters need parity tests against static fixtures where the behavior is already
+  captured (EPUB structure, cookie-store migration, session round-trip) — see
+  `tests/epub-archiver.test.ts` and `tests/session-store.test.ts` as the pattern to follow.
+  Fixtures under `tests/fixtures/stores/v1/` are data, not source, and stay after v1 deletion.
 
 ## Code delivery conventions
 

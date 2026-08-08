@@ -19,9 +19,8 @@ import os from "os";
 import { fileURLToPath } from "url";
 
 import { runJob } from "../src/app/runJob.js";
-import { createWinstonLogger } from "../src/adapters/logger-winston/WinstonLogger.js";
+import { createDefaultWinstonLogger } from "../src/adapters/logger-winston/WinstonLogger.js";
 import { NoopUIAdapter } from "../src/adapters/ui-noop/NoopUIAdapter.js";
-import logger from "../src/logger/index.js";
 import type { JobConfig } from "../src/core/domain/JobConfig.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,7 +101,7 @@ describe("Acceptance — full pipeline via real CloakBrowser (skip without binar
       output: { epub: true },
     };
 
-    const log = createWinstonLogger(logger);
+    const log = createDefaultWinstonLogger();
     const ui = new NoopUIAdapter();
     const result = await runJob(job, { log, ui });
 
