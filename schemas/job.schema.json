@@ -156,6 +156,28 @@
           "default": {
             "epub": true
           }
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "chapterUrls": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "name",
+              "chapterUrls"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

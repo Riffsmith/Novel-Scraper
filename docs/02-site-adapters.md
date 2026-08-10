@@ -173,7 +173,119 @@ Same `evaluate`-as-string requirement as WTR-Lab (`:134-140`).
 
 ---
 
-## 3. Adapter authoring checklist (for the third site)
+## 3. Webnovel - `webnovel.com`
+
+Source: `src/adapters/site-webnovel/WebnovelAdapter.ts` + `src/adapters/site-webnovel/urlUtils.ts`. Reference oracle: `reference/webnovel/contentExtractor.mjs` + `reference/webnovel/urlUtils.mjs` + `reference/webnovel/constants.mjs` (DOM-knowledge parts only - the browser stealth and network retry machinery stay unported per ADR-001 / ScrapeService ownership).
+
+| Concern | Value | Source line |
+|---------|-------|-------------|
+| Adapter id | `webnovel` | `WebnovelAdapter.ts` `makeWebnovelAdapter` |
+| Label shown in TUI | `Webnovel (webnovel.com)` | same |
+| Catalog (TOC) URL pattern | `novelUrl + "/catalog"` | `urlUtils.ts:getCatalogUrl` (verbatim from reference `urlUtils.mjs:10-15`) |
+
+### 3.1 URL match
+
+```ts
+/^([^.]+\.)*webnovel\.com$/i.test(new URL(url).hostname)
+```
+
+Matches `webnovel.com`, `www.webnovel.com`, `m.webnovel.com`, and any subdomain. Hostname regex test, never a substring (AGENTS.md rule - substring would match `https://attacker.com/?ref=webnovel.com`).
+
+### 3.2 TOC URL
+
+`novelUrl.replace(/\/$/, "") + "/catalog"` - the catalog page hosts both the volume-grouped chapter list (`div.volume-item`) and a flat fallback anchor bucket (`a.chapter-item`, `.chapter-list a`, `.catalog-content a:not(:has(svg))`). Single page, no pagination (the reference `extractChapterList` did not paginate; confirmed against a live catalog during implementation).
+
+### 3.3 URL normalisation (`urlUtils.ts`)
+
+| Helper | Behaviour | Reference |
+|--------|-----------|-----------|
+| `getCatalogUrl(novelUrl)` | strip trailing slash; append `/catalog` | `:10-15` |
+| `normalizeChapterUrl(chapterUrl, pageUrl)` | protocol-relative (`//foo`) -> `https:`, root-relative (`/foo`) -> `https://<host>foo`, absolute -> as-is | `:23-34` |
+| `normalizeWebnovelHost(url)` | strip `m.` mobile subdomain, promote bare `webnovel.com` to `www.`, strip locale segment (`/pt/book/`, `/id/book/`, `/vi/book/`, `/pt-br/book/`), clear search + hash | `:110-135` |
+| `resolveNovelUrl(rawUrl)` | shortener redirect (`wbnv.in`) -> canonical webnovel URL via got's `followRedirect: true` default, then `normalizeWebnovelHost` | `:144-158` |
+
+`resolveRedirect` lazy-imports `got` inside the function body (mirrors `ArchiverEpubWriter.ts:22-29`); the binary-clean path never pulls the HTTP dependency into memory. The reference's `redirect: "follow"` (node-fetch option) becomes a no-op for got v14 because got's `followRedirect` option defaults to `true` (read `node_modules/got/.../options.d.ts`).
+
+### 3.4 Metadata selectors
+
+| Field | Selector | Fallback |
+|-------|----------|----------|
+| Title | `p:has(a[title=home]) > span:last-child` (waitFor `p > span:last-child` first) | `"Unknown Title"` |
+| Author | `a.c_primary` `textContent` | `evaluateScript(AUTHOR_SCRIPT)` reading `address div.ell span`; fallback `"Unknown"` |
+| Description | `div.g_txt_over` `innerHTML` | cheerio strip `span._readmore` (the "show full synopsis" toggle); fallback `""` |
+| Cover | `._sd > i:nth-child(1) > img:nth-child(1)` `src` | protocol-relative (`//img.webnovel.com/...`) gets `https:` prefix |
+
+(`reference/webnovel/contentExtractor.mjs:14-110`)
+
+Tags (`.m-tags a.fs12`) are NOT in `AutoNovelMetadata` - the v2 surface is `{ title, author, description, coverUrl }`. The reference's tags-extraction (`:90-110`) and the EPUB's `<dc:subject>` emission (`reference/epubGenerator/manifestBuilder.mjs:64-69`) are dropped; v2 EPUB doesn't emit `dc:subject` today. Out of scope per the plan §"Open items requiring follow-up".
+
+### 3.5 Chapter list extraction
+
+Two-tier extraction (reference `contentExtractor.mjs:117-152`, `:218-237`, `:160-189`):
+
+1. **Volume walk** (primary): a single `PageHandle.evaluateScript(CATALOG_WALK_SCRIPT)` call returns `[{ index, name, hrefs }]` per `div.volume-item`. Each volume's `a:not(:has(svg))` are the unlocked chapters (locked chapters have an `<svg>` lock icon, matched by the `:not(:has(svg))` exclusion). Each href is normalized through `normalizeChapterUrl`. The single-script shape is what the AGENTS.md "page.evaluate() string-constant rule" allows (`PageHandle.evaluateScript` ships the source; no closure parameter).
+2. **Alternative-selector fallback** (when the volume-walk returns zero links): try each of `.volume-item a:not(:has(svg))`, `a.chapter-item`, `.chapter-list a`, `.catalog-content a:not(:has(svg))` in order. First selector that yields > 0 hrefs wins. Emits a single pseudo-volume `"Additional Chapters"` carrying all hrefs in this fallback path.
+
+- **De-dupe**: insertion-ordered `Set` of normalized URLs (AGENTS.md rule).
+- **Hard cap**: `MAX_CHAPTERS = 10_000` (the project-wide `MAX_CHAPTERS` constant, not a webnovel-specific fork per AGENTS.md "don't fork constants").
+- **No pagination**: webnovel's catalog is single-page (no `?page=N`). The volume-walk covers every `div.volume-item` on the page in one pass.
+
+### 3.6 Volume walk -> volume groups (`scrapeVolumes`, ADR-P7-B / D2 deviation)
+
+The adapter page visits the catalog ONCE per invocation (D2 deviation per the plan §"Adapter Phase 3" Compatibility note). A shared private `walkCatalogVolumes` helper produces `{ volumes: AutoNovelVolume[]; allUrls: string[] }`:
+
+- `scrapeChapterLinks` returns `allUrls` (flat ordered, de-duped, capped).
+- `scrapeVolumes` returns `volumes` (one `AutoNovelVolume` per `div.volume-item` carrying `name + chapterUrls`).
+
+Each `AutoNovelVolume.name` comes from the volume's `<h4>` element. Fallback name `"Volume <index + 1>"` if `h4` is missing - **NOT** the reference's `Volume ${Date.now()}` (D4 deviation: `Date.now()` is non-deterministic and breaks parity testing; the reference's own `epubExtractor.mjs` reordering path uses `<index>` and v2 adopts that). Each `chapterUrls` array is filtered against the global `allUrls` set so a volume never references a chapter that was dropped by de-dupe / cap. This lets the EPUB writer trust the volume map (no second-guessing; ADR-P7-C).
+
+### 3.7 Per-chapter content post-hook (`processChapterContent`, ADR-P7-D / D3 deviation)
+
+Replaces the generic `sanitize-html` allow-list path for webnovel chapters. Faithful port of `reference/webnovel/contentExtractor.mjs:351-470`:
+
+1. Load `rawHtml` with cheerio.
+2. Remove blacklisted tags (`pirate`, `i`) and blacklisted classes (`icon`, `para-comment`, `j_open_para_comment`, `j_para_comment_count`, `para-comment-num`, `cha-hr`, `cha-info`, `j_bottom_comment_area`, `user-links-wrap`) - verbatim from `reference/webnovel/constants.mjs:100-112`. Then remove `.anno-drop` elements (already-collected footnote popups).
+3. For each `<p>`, find `<anno data-annotation-id> sup` and replace `<sup>` with `<a href="#footnote-<id>" class="footnote-link" id="footnote-ref-<id>">N</a>`. `N` is a per-paragraph footnote counter starting at 1 (reference `:369` - the counter restarts at 1 for each paragraph, NOT global).
+4. Strip `class`, `id`, `style` from every `<p>` (reference `:397-398`).
+5. Build the footnotes HTML section (`<div class="footnotes-section">` with `<div class="footnote-item" id="footnote-...">` and `<a href="#footnote-ref-..." class="footnote-back-link">` back-links) - matching `_createFootnotesHTML` `:434-470`. `he.encode` is replaced with a local `escXml` (byte-identical 5-char entity encoder; `he`/`html-entities` are not v2 dependencies, and importing the EPUB writer's `escXml` would invert the hexagonal boundary).
+6. Wrap in `<h2 class="chapter-page-title">` + decorative-line divs (CSS classes already present in `templates.ts:671-686`).
+
+The reference's `contentProcessor.mjs:42-82` text-node re-escape pass is deliberately **NOT** ported (D3 deviation): v2's `toXhtml()` in `templates.ts:39-50` already escapes bare ampersands and self-closes void tags; re-applying the reference's escape would double-encode `&` to `&` + `amp;`.
+
+Footnote **collection** (`_extractFootnotes` in `reference/webnovel/contentExtractor.mjs:276-342` - clicking `<sup>` to trigger `.anno-drop` popup, collecting `.anno-drop-hd` + `.anno-drop-bd`) requires live-page interaction and lives outside `processChapterContent`. The plan parks it in a `collectFootnotes?(page): Promise<Footnote[] | undefined>` adapter method to add during Pipeline Phase 1 (deviation-log D5); it is **NOT** added by the Adapter / Epub phases.
+
+### 3.8 Extraction defaults
+
+```ts
+defaultContentSelector: "div.cha-words",
+defaultTitleSelector: "h1.dib.mb0.fw700.fs24.lh1\\.5, h1.chapter-title, .j_chapterName",
+defaultSeparateTitle: true,
+defaultExcludeSelectors: [
+  ".para-comment", ".cha-hr", ".cha-info", ".icon",
+  ".j_bottom_comment_area", ".user-links-wrap",
+],
+```
+
+(verbatim from `reference/webnovel/constants.mjs:30-31` + `:100-110`)
+
+### 3.9 String-evaluate rule
+
+Webnovel uses `PageHandle.evaluateScript` for:
+
+- `AUTHOR_SCRIPT` - author extraction via `address div.ell span` (reference `:52-56`).
+- `CATALOG_WALK_SCRIPT` - the volume walk, returns `[{ index, name, hrefs }]` per `div.volume-item`.
+- `makeAltChapterScript(selector)` - alternative-selector fallback (one per selector in `ALTERNATIVE_CHAPTER_SELECTORS`).
+- Future `FOOTNOTE_COLLECT_SCRIPT` (Pipeline Phase 1).
+
+Every script is a plain string constant defined at module scope; never a closure (the keepNames `__name` helper absent from browser scope - AGENTS.md "page.evaluate() string-constant rule").
+
+### 3.10 Verification status
+
+Verified against the live site during implementation: selectors still resolve on `webnovel.com` for title / author / catalog / volume-item-h4 paths. The locked-chapter `<svg>` exclusion holds.
+
+---
+
+## 4. Adapter authoring checklist (for the fourth site and beyond)
 
 1. **Match:** write `matches(url)` as a hostname regex test — never a URL substring test.
 2. **TOC resolution:** implement `getTocUrl(novelUrl)` so the auto-scrape flow can degrade
@@ -190,7 +302,7 @@ Same `evaluate`-as-string requirement as WTR-Lab (`:134-140`).
 
 ---
 
-## 4. Post-roadmap improvement ideas (not in parity scope)
+## 5. Post-roadmap improvement ideas (not in parity scope)
 
 - Promote the `evaluate`-as-string rule into a shared helper (`safeEvaluateString(page, script)`).
 - Add a tiny self-test command (`wnscrape doctor --site novelfire`) that scrapes the public

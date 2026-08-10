@@ -92,11 +92,25 @@ export const sessionDocumentSchema = z
     completedChapters: z.array(chapterSchema),
     errors: z.array(scrapeErrorSchema),
     // Phase 2 additive (05 §5): schemaVersion is absent on v1 files.
-    // The reader treats absent as implicit v1; the writer stamps v2.
+    // The reader treats absent as implicit v1; the writer stamps the
+    // current target. Phase 7 Scaffold bumps the target to 3 via the
+    // additive `volumes` migration chain entry (sessions.2to3.ts).
     schemaVersion: z.number().optional(),
+    // Phase 7 Scaffold additive (ADR-P7-A/B): absent on v1/v2 session
+    // files; the 2->3 migration treats missing as `undefined`. The writer
+    // stamps the field on next save only when a site adapter produced
+    // volumes (webnovel); flat-catalog sites leave it undefined.
+    volumes: z
+      .array(
+        z.object({
+          name: z.string(),
+          chapterUrls: z.array(z.string()),
+        }),
+      )
+      .optional(),
   })
   .passthrough();
 
-export const SESSION_STORE_SCHEMA_VERSION = 2;
+export const SESSION_STORE_SCHEMA_VERSION = 3;
 
 export type SessionDocumentParsed = z.output<typeof sessionDocumentSchema>;

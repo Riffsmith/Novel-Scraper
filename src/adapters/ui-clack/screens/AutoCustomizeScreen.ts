@@ -33,7 +33,10 @@ import { defaultFilenameFor } from "../validation.js";
 import * as fmt from "../format.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
 import type { JobConfig } from "../../../core/domain/JobConfig.js";
-import type { AutoScrapeResult, SiteAdapter } from "../../../core/domain/SiteAdapter.js";
+import type {
+  AutoScrapeResult,
+  SiteAdapter,
+} from "../../../core/domain/SiteAdapter.js";
 import type { SiteProfile } from "../../../ports/ProfileStore.js";
 import type { DomainCookie } from "../../../core/domain/Cookie.js";
 
@@ -82,16 +85,21 @@ export class AutoCustomizeScreen implements Screen {
     );
     if (p.profile) {
       ctx.prompt.log("info", fmt.section("Site Profile Loaded"));
-      ctx.prompt.log("success", `Found a saved profile for ${p.profile.domain}`);
+      ctx.prompt.log(
+        "success",
+        `Found a saved profile for ${p.profile.domain}`,
+      );
       ctx.prompt.log("dim", `Label: ${p.profile.label ?? "(no label)"}`);
     }
 
     // The three shared groups - extraction -> metadata -> output & perf.
     let a: ConfigAnswers = {
-      contentSelector: p.profile?.contentSelector ?? p.adapter.defaultContentSelector,
+      contentSelector:
+        p.profile?.contentSelector ?? p.adapter.defaultContentSelector,
       separateTitle: p.profile?.separateTitle ?? p.adapter.defaultSeparateTitle,
       titleSelector: p.profile?.titleSelector ?? p.adapter.defaultTitleSelector,
-      excludeSelectors: p.profile?.excludeSelectors ?? p.adapter.defaultExcludeSelectors,
+      excludeSelectors:
+        p.profile?.excludeSelectors ?? p.adapter.defaultExcludeSelectors,
       title: p.auto.metadata.title,
       author: p.auto.metadata.author || appCfg.defaultAuthor,
       language: appCfg.defaultLanguage,
@@ -100,12 +108,27 @@ export class AutoCustomizeScreen implements Screen {
 
     const groups: Array<{
       name: string;
-      run(prompt: ShellContext["prompt"], ans: ConfigAnswers): Promise<ConfigAnswers | typeof Cancel>;
+      run(
+        prompt: ShellContext["prompt"],
+        ans: ConfigAnswers,
+      ): Promise<ConfigAnswers | typeof Cancel>;
     }> = [
-      { name: "Content Extraction", run: (prompt, ans) => extractionGroup(prompt, ans, seed) },
-      { name: "Novel Metadata", run: (prompt, ans) => metadataGroup(prompt, ans, seed) },
-      { name: "Output & Performance", run: (prompt, ans) => outputPerfGroup(prompt, ans, seed) },
-      { name: "Review and Confirm", run: (prompt, ans) => reviewGroup(prompt, ans, p) },
+      {
+        name: "Content Extraction",
+        run: (prompt, ans) => extractionGroup(prompt, ans, seed),
+      },
+      {
+        name: "Novel Metadata",
+        run: (prompt, ans) => metadataGroup(prompt, ans, seed),
+      },
+      {
+        name: "Output & Performance",
+        run: (prompt, ans) => outputPerfGroup(prompt, ans, seed),
+      },
+      {
+        name: "Review and Confirm",
+        run: (prompt, ans) => reviewGroup(prompt, ans, p),
+      },
     ];
 
     let i = 0;
@@ -124,7 +147,7 @@ export class AutoCustomizeScreen implements Screen {
 
     const job = assembleAutoJob(a, appCfg, p);
     return {
-      action: "push",
+      action: "replace",
       screen: "task",
       params: {
         job,
@@ -154,7 +177,10 @@ async function reviewGroup(
   }
   prompt.log("info", `Threads    : ${a.concurrency ?? ""}`);
   prompt.log("info", `Delay      : ${a.delayRange ?? ""} ms`);
-  prompt.log("info", `Output     : ${a.outputDir ?? ""}/${a.outputFilename ?? ""}`);
+  prompt.log(
+    "info",
+    `Output     : ${a.outputDir ?? ""}/${a.outputFilename ?? ""}`,
+  );
   prompt.log("dim", "Escape goes back to change something - Ctrl+Q quits");
 
   const confirmed = await prompt.confirm({
@@ -189,7 +215,9 @@ function assembleAutoJob(
     excludeSelectors: answers.excludeSelectors ?? [],
     metadata,
     outputDir: (answers.outputDir ?? appCfg.defaultOutputDir).trim(),
-    outputFilename: (answers.outputFilename ?? "").trim() || defaultFilenameFor(answers.title ?? ""),
+    outputFilename:
+      (answers.outputFilename ?? "").trim() ||
+      defaultFilenameFor(answers.title ?? ""),
     concurrency: answers.concurrency ?? appCfg.defaultConcurrency,
     delayMin: isNaN(delayMin) ? appCfg.defaultDelayMin : delayMin,
     delayMax: isNaN(delayMax) ? appCfg.defaultDelayMax : delayMax,

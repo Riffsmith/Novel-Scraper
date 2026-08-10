@@ -27,7 +27,10 @@ import { ArchiverEpubWriter } from "../../epub-archiver/ArchiverEpubWriter.js";
 import { ClackUIAdapter } from "../ClackUIAdapter.js";
 import { JsonSessionStore } from "../../store-json/JsonSessionStore.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
-import type { JobConfig, ScrapeResult } from "../../../core/domain/JobConfig.js";
+import type {
+  JobConfig,
+  ScrapeResult,
+} from "../../../core/domain/JobConfig.js";
 import type { DomainCookie } from "../../../core/domain/Cookie.js";
 import type { ScrapeSession } from "../../../core/domain/Session.js";
 import type { LiveTaskRegistry, ScrapeTask } from "../TaskRegistry.js";
@@ -79,27 +82,43 @@ export class TaskScreen implements Screen {
       log: ctx.log,
     });
 
+    const total = sp.chapterUrls.length;
+    const spin = ctx.prompt.spinner();
+    let done = sp.resumeSession?.completedChapters.length ?? 0;
     let task: ScrapeTask | undefined;
     if (typeof registry.start === "function") {
       task = registry.start({
         id: sp.resumeSession?.id ?? crypto.randomUUID(),
         title: titleForTask,
-        total: sp.chapterUrls.length,
+        total,
         onCancel: async () => {
           scrapeService.cancel();
         },
       });
-      let done = 0;
-      ui.onEvent((e) => {
-        if (e.type === "chapter.done") {
-          done++;
-          registry.publishProgress(done);
-        }
-      });
     }
+    // Chapter completions and discovery progress drive the spinner's live
+    // message instead of scrolling the log - the chapter name is visible
+    // only for as long as it's the most-recently-completed one, then the
+    // next update overwrites it in place.
+    ui.onEvent((e) => {
+      if (e.type === "chapter.done") {
+        done++;
+        if (typeof registry.publishProgress === "function")
+          registry.publishProgress(done);
+        spin.message?.(`${fmt.taskBar(done, total)}  ${e.title}`);
+      } else if (e.type === "discovery.progress") {
+        spin.message?.(
+          `Discovering chapters… ${e.found} found across ${e.pages} pages`,
+        );
+      }
+    });
 
     ctx.prompt.log("info", fmt.section("Scraping Chapters"));
-    ctx.prompt.log("dim", "Press Ctrl+Q at any time to stop and save progress for later.");
+    ctx.prompt.log(
+      "dim",
+      "Press Ctrl+Q at any time to stop and save progress for later.",
+    );
+    spin.start(`${fmt.taskBar(done, total)}  Starting…`);
 
     let result: ScrapeResult;
     try {
@@ -109,12 +128,15 @@ export class TaskScreen implements Screen {
         sp.resumeSession ? { session: sp.resumeSession } : undefined,
       );
     } catch (e) {
-      ctx.prompt.log("error", `Scrape failed: ${(e as Error).message}`);
+      spin.fail(`Scrape failed: ${(e as Error).message}`);
       if (task) task.status = "failed";
       if (typeof registry.reset === "function") registry.reset();
-      await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+      await ctx.prompt
+        .text({ message: "Press Enter to return..." })
+        .catch(() => {});
       return { action: "pop" };
     }
+    spin.succeed(`Scraped ${result.chapters.length}/${total} chapters`);
     if (typeof registry.finish === "function") registry.finish();
 
     if (result.chapters.length === 0 && result.errors.length === 0) {
@@ -124,25 +146,33 @@ export class TaskScreen implements Screen {
         `Double-check the content selector - it did not match anything: "${job.contentSelector}"`,
       );
       if (typeof registry.reset === "function") registry.reset();
-      await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+      await ctx.prompt
+        .text({ message: "Press Enter to return..." })
+        .catch(() => {});
       return { action: "pop" };
     }
 
     if (result.errors.length > 0) {
-      ctx.prompt.log("warn", `${result.errors.length} chapter(s) could not be scraped:`);
+      ctx.prompt.log(
+        "warn",
+        `${result.errors.length} chapter(s) could not be scraped:`,
+      );
       for (const err of result.errors) {
         ctx.prompt.log("dim", `  ${err.url}  ->  ${err.error}`);
       }
     }
 
-    ctx.prompt.log("info", fmt.summaryCard({
-      title: job.metadata.title,
-      chapters: result.chapters.length,
-      words: result.totalWords,
-      timeMs: Date.now() - startMs,
-      output: job.outputDir + "/" + job.outputFilename,
-      errors: result.errors.length,
-    }));
+    ctx.prompt.log(
+      "info",
+      fmt.summaryCard({
+        title: job.metadata.title,
+        chapters: result.chapters.length,
+        words: result.totalWords,
+        timeMs: Date.now() - startMs,
+        output: job.outputDir + "/" + job.outputFilename,
+        errors: result.errors.length,
+      }),
+    );
 
     if (result.chapters.length > 0) {
       await maybeSaveProfile(
@@ -156,7 +186,9 @@ export class TaskScreen implements Screen {
     }
 
     if (typeof registry.reset === "function") registry.reset();
-    await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+    await ctx.prompt
+      .text({ message: "Press Enter to return..." })
+      .catch(() => {});
     return { action: "pop" };
   }
 }

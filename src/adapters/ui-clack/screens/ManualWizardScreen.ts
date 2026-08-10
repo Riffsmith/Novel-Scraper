@@ -53,7 +53,10 @@ export class ManualWizardScreen implements Screen {
     // Group order maps the v1 table (readme §2.4).
     const groups: Array<{
       name: string;
-      run(prompt: ShellContext["prompt"], ans: ConfigAnswers): Promise<ConfigAnswers | typeof Cancel>;
+      run(
+        prompt: ShellContext["prompt"],
+        ans: ConfigAnswers,
+      ): Promise<ConfigAnswers | typeof Cancel>;
     }> = [
       {
         name: "Source",
@@ -96,7 +99,8 @@ export class ManualWizardScreen implements Screen {
         let j = i;
         while (j >= 0) {
           const prev = groups[j];
-          if (prev.name === "Next-Chapter Locator" && a.method !== "sequential") j--;
+          if (prev.name === "Next-Chapter Locator" && a.method !== "sequential")
+            j--;
           else break;
         }
         i = j;
@@ -109,7 +113,7 @@ export class ManualWizardScreen implements Screen {
 
     const job = assembleJob(a, appCfg, p);
     return {
-      action: "push",
+      action: "replace",
       screen: "manual-discovery",
       params: { job, domain: p.domain, isNewDomain: p.isNewDomain },
     };
@@ -143,7 +147,11 @@ async function locatorsGroup(
     );
   }
 
-  const primary = await promptLocator(prompt, "Primary locator", profileLocators[0]);
+  const primary = await promptLocator(
+    prompt,
+    "Primary locator",
+    profileLocators[0],
+  );
   if (primary === Cancel) return Cancel;
   let locators: NextLocator[] = [primary];
   const fresh = await appendFallbacks(prompt, [...locators]);
@@ -172,7 +180,10 @@ async function reviewGroup(
   }
   prompt.log("info", `Threads : ${a.concurrency ?? ""}`);
   prompt.log("info", `Delay   : ${a.delayRange ?? ""} ms`);
-  prompt.log("info", `Output  : ${a.outputDir ?? ""}/${a.outputFilename ?? ""}`);
+  prompt.log(
+    "info",
+    `Output  : ${a.outputDir ?? ""}/${a.outputFilename ?? ""}`,
+  );
   prompt.log("dim", "Escape goes back to change something · Ctrl+Q quits");
 
   const confirmed = await prompt.confirm({
@@ -207,7 +218,9 @@ function assembleJob(
     excludeSelectors: answers.excludeSelectors ?? [],
     metadata,
     outputDir: (answers.outputDir ?? appCfg.defaultOutputDir).trim(),
-    outputFilename: (answers.outputFilename ?? "").trim() || defaultFilenameFor(answers.title ?? ""),
+    outputFilename:
+      (answers.outputFilename ?? "").trim() ||
+      defaultFilenameFor(answers.title ?? ""),
     concurrency: answers.concurrency ?? appCfg.defaultConcurrency,
     delayMin: isNaN(delayMin) ? appCfg.defaultDelayMin : delayMin,
     delayMax: isNaN(delayMax) ? appCfg.defaultDelayMax : delayMax,

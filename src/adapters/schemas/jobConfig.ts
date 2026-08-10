@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  jobConfig schema - zod validation for the YAML job file (`jobs/*.yaml`).
+//  JobConfig schema - zod validation for the YAML job file (`jobs/*.yaml`).
 //
 //  This is the one Phase 1 artifact Phase 2 deliberately deletes
 //  (phase-2 §2.5): `app/loadJobFile.ts`'s hand-rolled validator is replaced
@@ -31,6 +31,14 @@ const novelMetadataSchema = z.object({
   coverSource: z.enum(["url", "file", "none"]).default("none"),
   coverUrl: z.string().optional(),
   coverPath: z.string().optional(),
+});
+
+// Phase 7 Scaffold additive (ADR-P7-A/B): one entry per chapter-grouped
+// volume from a site adapter's catalog walk. Flat-catalog adapters leave
+// `volumes` absent; the EPUB writer falls through its no-volumes path.
+const volumeSchema = z.object({
+  name: z.string(),
+  chapterUrls: z.array(z.string()),
 });
 
 export const jobConfigSchema = z
@@ -68,6 +76,11 @@ export const jobConfigSchema = z
         epub: z.boolean().default(true),
       })
       .default({ epub: true }),
+
+    // Phase 7 Scaffold additive-optional (ADR-P7-B): present only when a
+    // site adapter's scrapeVolumes() call produced volume-grouping data.
+    // Default-undefined to keep flat-catalog jobs byte-identical to today.
+    volumes: z.array(volumeSchema).optional(),
   })
   .passthrough();
 

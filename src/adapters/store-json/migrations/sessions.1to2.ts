@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { StoreMigration } from "./chain.js";
+import { sessions2to3 } from "./sessions.2to3.js";
 
 export const sessions1to2: StoreMigration = {
   fromVersion: 1,
@@ -25,4 +26,10 @@ export const sessions1to2: StoreMigration = {
   },
 };
 
-export const sessionsMigrations: ReadonlyArray<StoreMigration> = [sessions1to2];
+// Chain assembly point (per docs/05-migration-guide.md §9). One entry per
+// schema bump; applied in order by runMigrations. Phase 7 Scaffold adds
+// sessions2to3 as the additive-optional `volumes` step.
+export const sessionsMigrations: ReadonlyArray<StoreMigration> = [
+  sessions1to2,
+  sessions2to3,
+];

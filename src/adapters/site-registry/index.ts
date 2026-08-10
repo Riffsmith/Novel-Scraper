@@ -19,8 +19,9 @@
 import type { SiteAdapter } from "../../core/domain/SiteAdapter.js";
 import { wtrLabAdapter } from "../site-wtr-lab/WtrLabAdapter.js";
 import { novelFireAdapter } from "../site-novelfire/NovelFireAdapter.js";
+import { webnovelAdapter } from "../site-webnovel/WebnovelAdapter.js";
 
-export const SITE_ADAPTERS: SiteAdapter[] = [wtrLabAdapter, novelFireAdapter];
+export const SITE_ADAPTERS: SiteAdapter[] = [wtrLabAdapter, novelFireAdapter, webnovelAdapter];
 
 export function findSiteAdapter(url: string): SiteAdapter | null {
   return (
@@ -34,5 +35,5 @@ export function findSiteAdapter(url: string): SiteAdapter | null {
   );
 }
 
-export { wtrLabAdapter, novelFireAdapter };
+export { wtrLabAdapter, novelFireAdapter, webnovelAdapter };
 export type { SiteAdapter };

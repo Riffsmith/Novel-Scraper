@@ -30,7 +30,10 @@ export interface PromptProvider {
     initial?: T;
   }): Promise<T | Cancel>;
 
-  confirm(opts: { message: string; initial?: boolean }): Promise<boolean | Cancel>;
+  confirm(opts: {
+    message: string;
+    initial?: boolean;
+  }): Promise<boolean | Cancel>;
 
   text(opts: {
     message: string;
@@ -45,6 +48,7 @@ export interface PromptProvider {
     stop(text?: string): void;
     fail(text?: string): void;
     succeed(text?: string): void;
+    message?(text: string): void;
   };
 
   log(kind: "info" | "success" | "warn" | "error" | "dim", msg: string): void;

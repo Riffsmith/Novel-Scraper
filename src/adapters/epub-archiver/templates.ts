@@ -1,5 +1,6 @@
 import type { NovelMetadata } from "../../core/domain/NovelMetadata.js";
 import type { Chapter } from "../../core/domain/Chapter.js";
+import type { AutoNovelVolume } from "../../core/domain/Volume.js";
 
 // ── XML/XHTML escaping ────────────────────────────────────────────────────
 export function escXml(s: string): string {
@@ -95,6 +96,7 @@ export function contentOpf(
   chapters: Chapter[],
   hasCover: boolean,
   bookId: string,
+  volumes: AutoNovelVolume[] = [],
 ): string {
   const now = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 
@@ -105,9 +107,47 @@ export function contentOpf(
     )
     .join("\n");
 
-  const spineItems = chapters
-    .map((ch) => `    <itemref idref="ch-${ch.index}"/>`)
-    .join("\n");
+  // Resolve URL -> Chapter -> volume groups once; both manifest and spine
+  // derive from this. Per ADR-P7-C, the writer is the single index authority.
+  // When `volumes` is empty/undefined this falls through to the byte-identical
+  // flat path (verified by tests/epub-archiver.test.ts).
+  const { groups, extra } = resolveVolumeGroups(chapters, volumes);
+  const hasVolumes = groups.some((g) => g.chapters.length > 0);
+
+  const manifestVolumes = hasVolumes
+    ? "\n" +
+      groups
+        .filter((g) => g.chapters.length > 0)
+        .map(
+          (g) =>
+            `    <item id="volume-${g.index + 1}" href="volumes/volume-${g.index + 1}.xhtml" media-type="application/xhtml+xml"/>`,
+        )
+        .join("\n")
+    : "";
+
+  // Spine construction. Without volumes, byte-identical to the pre-Phase-7
+  // spine (cover -> synopsis -> nav -> flat chapter list). With volumes:
+  // cover -> synopsis -> nav -> for each volume-with-chapters: volume page ->
+  // its chapters -> unmatched extras bucket.
+  let spineItems: string;
+  if (hasVolumes) {
+    const parts: string[] = [];
+    for (const g of groups) {
+      if (g.chapters.length === 0) continue;
+      parts.push(`    <itemref idref="volume-${g.index + 1}"/>`);
+      for (const ch of g.chapters) {
+        parts.push(`    <itemref idref="ch-${ch.index}"/>`);
+      }
+    }
+    for (const ch of extra) {
+      parts.push(`    <itemref idref="ch-${ch.index}"/>`);
+    }
+    spineItems = parts.join("\n");
+  } else {
+    spineItems = chapters
+      .map((ch) => `    <itemref idref="ch-${ch.index}"/>`)
+      .join("\n");
+  }
 
   // The cover now doubles as the book's title page (Calibre convention:
   // properties="calibre:title-page" marks which manifest item is the title
@@ -130,6 +170,14 @@ export function contentOpf(
     (f) =>
       `    <item id="${f.id}" href="fonts/${f.filename}" media-type="${f.mediaType}"/>`,
   ).join("\n");
+
+  // Guide Start of Content. With volumes, the first body item is the first
+  // volume page (matches the reference manifestBuilder.mjs:175-178 guide
+  // reference intuition that the volume page is what the reader sees first
+  // after synopsis); without volumes it stays the first chapter as today.
+  const startHref = hasVolumes
+    ? `volumes/volume-${groups.find((g) => g.chapters.length > 0)!.index + 1}.xhtml`
+    : "chapters/chapter-1.xhtml";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <package version="3.0"
@@ -157,7 +205,7 @@ ${coverMeta}
     <item id="synopsis"   href="synopsis.xhtml"      media-type="application/xhtml+xml"/>
 ${fontManifest}
 ${coverManifest}
-${manifestChapters}
+${manifestChapters}${manifestVolumes}
   </manifest>
 
   <spine toc="ncx">
@@ -171,7 +219,7 @@ ${spineItems}
     ${hasCover ? '<reference type="cover"      title="Cover"              href="cover.xhtml"/>\n    <reference type="title-page" title="Title Page"          href="cover.xhtml"/>' : ""}
     <reference type="other.synopsis" title="Synopsis"          href="synopsis.xhtml"/>
     <reference type="toc"        title="Table of Contents"  href="nav.xhtml"/>
-    <reference type="text"       title="Start of Content"   href="chapters/chapter-1.xhtml"/>
+    <reference type="text"       title="Start of Content"   href="${startHref}"/>
   </guide>
 </package>`;
 }
@@ -183,17 +231,68 @@ export function navXhtml(
   meta: NovelMetadata,
   chapters: Chapter[],
   hasCover: boolean,
+  volumes: AutoNovelVolume[] = [],
 ): string {
-  const items = chapters
-    .map(
-      (ch) =>
-        `      <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
-    )
-    .join("\n");
-
   const coverItem = hasCover
     ? `      <li><a href="cover.xhtml">Title Page</a></li>\n`
     : "";
+
+  // Resolve volume groups. When `volumes` is empty/undefined, the flat `<li>`
+  // list is emitted byte-identical to the pre-Phase-7 nav (regression-guarded
+  // by tests/epub-archiver.test.ts). When volumes carry chapters, each volume
+  // is an outer `<li>` with a nested `<ol>` of its chapters; unmatched chapters
+  // go into an "Additional Chapters" group matching the reference
+  // tocBuilder.mjs:57-71.
+  const { groups, extra } = resolveVolumeGroups(chapters, volumes);
+  const hasVolumes = groups.some((g) => g.chapters.length > 0);
+
+  let navItems: string;
+  if (hasVolumes) {
+    const parts: string[] = [];
+    for (const g of groups) {
+      if (g.chapters.length === 0) continue;
+      const chapterLis = g.chapters
+        .map(
+          (ch) =>
+            `        <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
+        )
+        .join("\n");
+      parts.push(`      <li>
+        <a href="volumes/volume-${g.index + 1}.xhtml">${escXml(g.volume.name)}</a>
+        <ol>
+${chapterLis}
+        </ol>
+      </li>`);
+    }
+    if (extra.length > 0) {
+      const extraLis = extra
+        .map(
+          (ch) =>
+            `        <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
+        )
+        .join("\n");
+      parts.push(`      <li>
+        <a href="#">Additional Chapters</a>
+        <ol>
+${extraLis}
+        </ol>
+      </li>`);
+    }
+    navItems = parts.join("\n");
+  } else {
+    navItems = chapters
+      .map(
+        (ch) =>
+          `      <li><a href="chapters/chapter-${ch.index}.xhtml">${escXml(ch.title)}</a></li>`,
+      )
+      .join("\n");
+  }
+
+  // "Start of Content" landmark. With volumes, first volume page; without,
+  // first chapter page (matches the content.opf guide text reference).
+  const startHref = hasVolumes
+    ? `volumes/volume-${groups.find((g) => g.chapters.length > 0)!.index + 1}.xhtml`
+    : "chapters/chapter-1.xhtml";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -210,13 +309,13 @@ export function navXhtml(
     <h1>Table of Contents</h1>
     <ol>
 ${coverItem}      <li><a href="synopsis.xhtml">Synopsis</a></li>
-${items}
+${navItems}
     </ol>
   </nav>
   <nav epub:type="landmarks" id="landmarks" hidden="">
     <ol>
       <li><a epub:type="toc"        href="nav.xhtml">Table of Contents</a></li>
-      <li><a epub:type="bodymatter" href="chapters/chapter-1.xhtml">Start of Content</a></li>
+      <li><a epub:type="bodymatter" href="${startHref}">Start of Content</a></li>
     </ol>
   </nav>
 </body>
@@ -231,8 +330,12 @@ export function tocNcx(
   chapters: Chapter[],
   bookId: string,
   hasCover: boolean,
+  volumes: AutoNovelVolume[] = [],
 ): string {
-  // playOrder: [cover (if present) →] synopsis → chapters
+  // playOrder: [cover (if present) ->] synopsis -> (volumes w/ nested chapters
+  // | flat chapter list). With volumes, each volume is a parent navPoint
+  // wrapping its chapters' navPoints (matches reference tocBuilder.mjs:124-176).
+  // Without volumes, byte-identical pre-Phase-7 behaviour.
   let playOrder = 1;
 
   const coverNavPoint = hasCover
@@ -249,16 +352,56 @@ export function tocNcx(
       <content src="synopsis.xhtml"/>
     </navPoint>`;
 
-  const chapterStart = playOrder;
-  const navPoints = chapters
-    .map(
-      (ch, i) => `
+  const { groups, extra } = resolveVolumeGroups(chapters, volumes);
+  const hasVolumes = groups.some((g) => g.chapters.length > 0);
+
+  let navPoints: string;
+  if (hasVolumes) {
+    const parts: string[] = [];
+    for (const g of groups) {
+      if (g.chapters.length === 0) continue;
+      parts.push(`
+    <navPoint id="np-volume-${g.index + 1}" playOrder="${playOrder++}">
+      <navLabel><text>${escXml(g.volume.name)}</text></navLabel>
+      <content src="volumes/volume-${g.index + 1}.xhtml"/>`);
+      for (const ch of g.chapters) {
+        parts.push(`
+      <navPoint id="np-${ch.index}" playOrder="${playOrder++}">
+        <navLabel><text>${escXml(ch.title)}</text></navLabel>
+        <content src="chapters/chapter-${ch.index}.xhtml"/>
+      </navPoint>`);
+      }
+      parts.push(`
+    </navPoint>`);
+    }
+    if (extra.length > 0) {
+      parts.push(`
+    <navPoint id="np-extra" playOrder="${playOrder++}">
+      <navLabel><text>Additional Chapters</text></navLabel>
+      <content src="#"/>`);
+      for (const ch of extra) {
+        parts.push(`
+      <navPoint id="np-${ch.index}" playOrder="${playOrder++}">
+        <navLabel><text>${escXml(ch.title)}</text></navLabel>
+        <content src="chapters/chapter-${ch.index}.xhtml"/>
+      </navPoint>`);
+      }
+      parts.push(`
+    </navPoint>`);
+    }
+    navPoints = parts.join("");
+  } else {
+    const chapterStart = playOrder;
+    navPoints = chapters
+      .map(
+        (ch, i) => `
   <navPoint id="np-${ch.index}" playOrder="${chapterStart + i}">
     <navLabel><text>${escXml(ch.title)}</text></navLabel>
     <content src="chapters/chapter-${ch.index}.xhtml"/>
   </navPoint>`,
-    )
-    .join("");
+      )
+      .join("");
+  }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN"
@@ -360,6 +503,102 @@ export function chapterXhtml(ch: Chapter, meta: NovelMetadata): string {
   <div class="ending-line">✦ ✧ ✦ ✧ ✦</div>
 </body>
 </html>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OEBPS/volumes/volume-N.xhtml
+//
+//  One volume page per `AutoNovelVolume`. Inserted into the spine before its
+//  chapters (matches the reference epubGenerator/contentProcessor.mjs:193-228
+//  `createVolumePage`). The CSS `.volume-title` already exists (line ~759)
+//  for the absolutely-centered treatment, so no stylesheet change here.
+//
+//  D1 deviation: the reference emits an extra
+//  `<p class="volume-info">Unlocked Chapters: N</p>` when
+//  `unlockedChapterCount < chapterCount` (contentProcessor.mjs:208-211). The
+//  v2 `Volume` shape (ADR-P7-C: `{ name; chapterUrls }`) carries no locked /
+//  unlocked metadata, so the v2 volume page omits that line. Adding
+//  `unlockedChapterCount?` / `chapterCount?` to `Volume` for data v2 doesn't
+//  otherwise use is scope creep. Documented in docs/phase-7/deviation-log.md.
+// ─────────────────────────────────────────────────────────────────────────────
+export function volumeXhtml(volume: AutoNovelVolume, _index: number): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <title>${escXml(volume.name)}</title>
+  <link rel="stylesheet" type="text/css" href="styles/style.css"/>
+</head>
+<body>
+  <div class="volume-page">
+    <h1 class="volume-title">${escXml(volume.name)}</h1>
+  </div>
+</body>
+</html>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveVolumeGroups - assign chapters to volumes by URL membership.
+//
+//  ADR-P7-C: the adapter is the single DOM-knowledge authority (it walks the
+//  catalog volume-by-volume and emits `name + chapterUrls`); the EPUB writer
+//  is the single index authority. The writer takes `Chapter[]` (each carries a
+//  canonical `url`) plus `Volume[]`, builds `Map<url, Chapter>`, and assigns
+//  each chapter to a volume by `volume.chapterUrls.includes(chapter.url)`.
+//  Unmatched chapters fall through to an "Additional Chapters" pseudo-group
+//  (matches the reference's `volumeChapters.get("extra")` behaviour in
+//  tocBuilder.mjs:57-71 / manifestBuilder.mjs:159-167).
+//
+//  Defensive: a chapter present in multiple volumes is placed in its first-
+//  seen volume only; the v2 adapter's scrapeVolumes returns disjoint sets, so
+//  this branch shouldn't fire in practice but is here so the writer trusts the
+//  volume map (no second-guessing whether each volume's URL count matches its
+//  chapter count).
+// ─────────────────────────────────────────────────────────────────────────────
+export interface VolumeGroup {
+  volume: AutoNovelVolume;
+  index: number;
+  chapters: Chapter[];
+}
+
+export interface ResolvedVolumes {
+  groups: VolumeGroup[];
+  extra: Chapter[];
+}
+
+export function resolveVolumeGroups(
+  chapters: Chapter[],
+  volumes: AutoNovelVolume[] | undefined,
+): ResolvedVolumes {
+  if (!volumes || volumes.length === 0) {
+    return { groups: [], extra: [...chapters] };
+  }
+
+  const byUrl = new Map<string, Chapter>();
+  for (const ch of chapters) byUrl.set(ch.url, ch);
+
+  const groups: VolumeGroup[] = [];
+  const extra: Chapter[] = [];
+  const assigned = new Set<string>();
+
+  volumes.forEach((vol, index) => {
+    const set: Chapter[] = [];
+    for (const url of vol.chapterUrls) {
+      const ch = byUrl.get(url);
+      if (ch && !assigned.has(url)) {
+        set.push(ch);
+        assigned.add(url);
+      }
+    }
+    groups.push({ volume: vol, index, chapters: set });
+  });
+
+  for (const ch of chapters) {
+    if (!assigned.has(ch.url)) extra.push(ch);
+  }
+
+  return { groups, extra };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

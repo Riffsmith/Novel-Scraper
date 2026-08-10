@@ -33,7 +33,11 @@ import * as fmt from "../format.js";
 import { defaultFilenameFor } from "../validation.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
 import type { JobConfig } from "../../../core/domain/JobConfig.js";
-import type { AutoNovelMetadata, AutoScrapeResult, SiteAdapter } from "../../../core/domain/SiteAdapter.js";
+import type {
+  AutoNovelMetadata,
+  AutoScrapeResult,
+  SiteAdapter,
+} from "../../../core/domain/SiteAdapter.js";
 import type { SiteProfile } from "../../../ports/ProfileStore.js";
 import type { DomainCookie } from "../../../core/domain/Cookie.js";
 import type { NovelMetadata } from "../../../core/domain/NovelMetadata.js";
@@ -50,7 +54,10 @@ export class AutoProbeScreen implements Screen {
 
     // ── Unsupported-site fallback (v1 index.ts:605-616) ──────────────────────
     if (!adapter) {
-      ctx.prompt.log("error", "This site is not supported for auto-scraping yet.");
+      ctx.prompt.log(
+        "error",
+        "This site is not supported for auto-scraping yet.",
+      );
       ctx.prompt.log(
         "dim",
         "Currently supported: novelfire.net, wtr-lab.com (add more via src/adapters/site-*/).",
@@ -79,15 +86,23 @@ export class AutoProbeScreen implements Screen {
     try {
       spin.start(`Fetching novel metadata from ${adapter.label}...`);
       const browser = await ctx.browser.launch(
-        launchOptionsForScrape(appCfg, { ...baseJobSeed, headless: appCfg.headless }),
+        launchOptionsForScrape(appCfg, {
+          ...baseJobSeed,
+          headless: appCfg.headless,
+        }),
       );
-      const context = await ctx.browser.createContext(browser, cookies.length ? cookies : undefined);
+      const context = await ctx.browser.createContext(
+        browser,
+        cookies.length ? cookies : undefined,
+      );
       const page = await ctx.browser.newPage(context);
 
       let metadata: AutoNovelMetadata;
       try {
         metadata = await adapter.scrapeMetadata(page, entryUrl);
-        spin.succeed(`Metadata fetched: "${metadata.title}" by ${metadata.author}`);
+        spin.succeed(
+          `Metadata fetched: "${metadata.title}" by ${metadata.author}`,
+        );
       } catch (e) {
         spin.fail("Metadata fetch failed");
         await page.close().catch(() => {});
@@ -96,7 +111,9 @@ export class AutoProbeScreen implements Screen {
         throw e;
       }
 
-      spin.start("Collecting chapter links (this can take a while on long novels)...");
+      spin.start(
+        "Collecting chapter links (this can take a while on long novels)...",
+      );
       let chapterLinks: string[];
       try {
         chapterLinks = await adapter.scrapeChapterLinks(page, entryUrl, {
@@ -118,7 +135,9 @@ export class AutoProbeScreen implements Screen {
       auto = { siteId: adapter.id, novelUrl: entryUrl, metadata, chapterLinks };
     } catch (e) {
       ctx.prompt.log("error", `Auto-scrape failed: ${(e as Error).message}`);
-      await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+      await ctx.prompt
+        .text({ message: "Press Enter to return..." })
+        .catch(() => {});
       return { action: "pop" };
     }
 
@@ -127,7 +146,9 @@ export class AutoProbeScreen implements Screen {
         "error",
         "No chapter links were found. The page structure on this site may have changed.",
       );
-      await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+      await ctx.prompt
+        .text({ message: "Press Enter to return..." })
+        .catch(() => {});
       return { action: "pop" };
     }
 
@@ -179,7 +200,10 @@ async function fastPathConfirmStart(
   isNewDomain: boolean,
 ): Promise<ScreenResult> {
   ctx.prompt.log("info", fmt.section("Ready to Scrape"));
-  ctx.prompt.log("info", `Output file : ${job.outputDir}/${job.outputFilename}`);
+  ctx.prompt.log(
+    "info",
+    `Output file : ${job.outputDir}/${job.outputFilename}`,
+  );
   ctx.prompt.log(
     "info",
     `Concurrency : ${job.concurrency}   Delay: ${job.delayMin}-${job.delayMax} ms`,
@@ -191,7 +215,7 @@ async function fastPathConfirmStart(
   if (confirmed === Cancel) return { action: "pop" };
   if (!confirmed) return { action: "pop" };
   return {
-    action: "push",
+    action: "replace",
     screen: "task",
     params: { job, chapterUrls: auto.chapterLinks, cookies, isNewDomain },
   };
@@ -211,7 +235,10 @@ function renderScanSummary(
   );
   ctx.prompt.log("info", `Chapters found  : ${auto.chapterLinks.length}`);
   ctx.prompt.log("dim", `  first: ${auto.chapterLinks[0]}`);
-  ctx.prompt.log("dim", `  last : ${auto.chapterLinks[auto.chapterLinks.length - 1]}`);
+  ctx.prompt.log(
+    "dim",
+    `  last : ${auto.chapterLinks[auto.chapterLinks.length - 1]}`,
+  );
   ctx.prompt.log(
     "info",
     `Content selector: ${profile?.contentSelector ?? adapter.defaultContentSelector} ${profile ? "(from saved profile)" : "(site default)"}`,
@@ -235,10 +262,12 @@ function buildQuickAutoConfig(
   adapter: SiteAdapter,
   auto: AutoScrapeResult,
 ): JobConfig {
-  const contentSelector = profile?.contentSelector ?? adapter.defaultContentSelector;
+  const contentSelector =
+    profile?.contentSelector ?? adapter.defaultContentSelector;
   const separateTitle = profile?.separateTitle ?? adapter.defaultSeparateTitle;
   const titleSelector = profile?.titleSelector ?? adapter.defaultTitleSelector;
-  const excludeSelectors = profile?.excludeSelectors ?? adapter.defaultExcludeSelectors;
+  const excludeSelectors =
+    profile?.excludeSelectors ?? adapter.defaultExcludeSelectors;
 
   const metadata: NovelMetadata = {
     title: auto.metadata.title,

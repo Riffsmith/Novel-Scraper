@@ -37,7 +37,12 @@ export const clackPromptProvider: PromptProvider = {
       // clack's Option<T> conditional type needs the value narrowing that TS
       // cannot do inside a generic call; cast through the option shape.
       options: opts.options.map((o) => {
-        const out: { value: T; label: string; hint?: string; disabled?: boolean } = {
+        const out: {
+          value: T;
+          label: string;
+          hint?: string;
+          disabled?: boolean;
+        } = {
           value: o.value,
           label: o.label,
         };
@@ -48,7 +53,10 @@ export const clackPromptProvider: PromptProvider = {
     return isCancel(result) ? Cancel : (result as T);
   },
 
-  async confirm(opts: { message: string; initial?: boolean }): Promise<boolean | CancelType> {
+  async confirm(opts: {
+    message: string;
+    initial?: boolean;
+  }): Promise<boolean | CancelType> {
     const result = await clack.confirm({
       message: opts.message,
       initialValue: opts.initial,
@@ -70,7 +78,11 @@ export const clackPromptProvider: PromptProvider = {
       validate: opts.validate
         ? (v) => {
             const out = opts.validate!(v ?? "");
-            return out === true ? undefined : out === false ? "Invalid value" : out;
+            return out === true
+              ? undefined
+              : out === false
+                ? "Invalid value"
+                : out;
           }
         : undefined,
     });
@@ -82,6 +94,7 @@ export const clackPromptProvider: PromptProvider = {
     stop(text?: string): void;
     fail(text?: string): void;
     succeed(text?: string): void;
+    message?(text: string): void;
   } {
     const s = clack.spinner();
     return {
@@ -96,6 +109,9 @@ export const clackPromptProvider: PromptProvider = {
       },
       succeed(text?: string) {
         s.stop(text);
+      },
+      message(text: string) {
+        s.message(text);
       },
     };
   },

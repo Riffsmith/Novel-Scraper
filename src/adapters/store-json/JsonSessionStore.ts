@@ -54,8 +54,12 @@ export class JsonSessionStore implements SessionStore {
       }
     }
 
-    // Stamp schemaVersion: 2 on write (migration-guide §5 - stamped on next
-    // write, not on read, so Phase 1 artifacts upgrade with zero risk window).
+    // Stamp schemaVersion on write (migration-guide §5 - stamped on next
+    // write, not on read, so Phase 1 artifacts upgrade with zero risk
+    // window). The constant is sourced from the session schema module so
+    // the stamp always matches the migration chain's target version
+    // (currently 3 - Phase 7 Scaffold bumped it for the additive `volumes`
+    // field).
     const stamped: ScrapeSession & { schemaVersion?: number } = {
       ...session,
       schemaVersion: SESSION_STORE_SCHEMA_VERSION,

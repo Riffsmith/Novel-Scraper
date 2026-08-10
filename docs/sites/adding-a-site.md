@@ -1,7 +1,7 @@
 # Adding a Site Adapter
 
 This is the contributor-facing how-to for adding a third site adapter. It is extracted from the
-adapter authoring checklist in `docs/02-site-adapters.md` section 3 (the cookbook is the
+adapter authoring checklist in `docs/02-site-adapters.md` section 4 (the cookbook is the
 evidence doc for the two built-in adapters; this is the standalone procedure). The two built-in
 adapters, WTR-Lab and NovelFire, live under `src/adapters/...` (post-Phase-6 location) and serve
 as the reference implementations.
@@ -94,7 +94,7 @@ you know a layout shifted mid-scrape.
 
 ---
 
-## Adapter authoring checklist (verbatim from cookbook section 3)
+## Adapter authoring checklist (verbatim from cookbook section 4)
 
 1. **Match:** write `matches(url)` as a hostname regex test - never a URL substring test.
 2. **TOC resolution:** implement `getTocUrl(novelUrl)` so the auto-scrape flow can degrade

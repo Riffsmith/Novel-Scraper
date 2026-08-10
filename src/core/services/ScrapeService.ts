@@ -13,7 +13,11 @@ import { SecurityChallengeError } from "../errors.js";
 import { ChapterExtractor } from "./ChapterExtractor.js";
 
 import type { Chapter } from "../domain/Chapter.js";
-import type { ScrapeError, ScrapeResult, JobConfig } from "../domain/JobConfig.js";
+import type {
+  ScrapeError,
+  ScrapeResult,
+  JobConfig,
+} from "../domain/JobConfig.js";
 import type { ScrapeSession } from "../domain/Session.js";
 import type { DomainCookie } from "../domain/Cookie.js";
 import type {
@@ -66,7 +70,9 @@ export class ScrapeService {
     try {
       const urls = resume?.session?.chapterUrls ?? job.chapterLinks ?? [];
       if (urls.length === 0) {
-        throw new Error("No chapter URLs — discovery must run before ScrapeService");
+        throw new Error(
+          "No chapter URLs — discovery must run before ScrapeService",
+        );
       }
 
       const concurrency = job.concurrency;
@@ -111,9 +117,15 @@ export class ScrapeService {
             errors: [...errors],
           };
           await this.deps.sessions.save(updated);
-          this.deps.ui.emit({ type: "checkpoint.saved", sessionId: sessionRef.id, done: completed });
+          this.deps.ui.emit({
+            type: "checkpoint.saved",
+            sessionId: sessionRef.id,
+            done: completed,
+          });
         } catch (e) {
-          this.deps.log.warn(`Checkpoint persistence failed: ${(e as Error).message}`);
+          this.deps.log.warn(
+            `Checkpoint persistence failed: ${(e as Error).message}`,
+          );
         }
       };
 
@@ -135,16 +147,21 @@ export class ScrapeService {
         try {
           await delay(randomInt(job.delayMin, job.delayMax));
 
-          const chapter = await extractor.extract(page, task.url, task.index + 1, {
-            contentSelector: job.contentSelector,
-            titleSelector: job.titleSelector,
-            separateTitle: job.separateTitle,
-            excludeSelectors: job.excludeSelectors,
-            delayMin: job.delayMin,
-            delayMax: job.delayMax,
-            waitUntil: "domcontentloaded",
-            navTimeoutMs: 30_000,
-          });
+          const chapter = await extractor.extract(
+            page,
+            task.url,
+            task.index + 1,
+            {
+              contentSelector: job.contentSelector,
+              titleSelector: job.titleSelector,
+              separateTitle: job.separateTitle,
+              excludeSelectors: job.excludeSelectors,
+              delayMin: job.delayMin,
+              delayMax: job.delayMax,
+              waitUntil: "domcontentloaded",
+              navTimeoutMs: 30_000,
+            },
+          );
 
           if (chapter) {
             slots[task.index] = chapter;
@@ -181,6 +198,10 @@ export class ScrapeService {
               url: task.url,
               error: "No content extracted after max retries",
             });
+            slots[task.index] = makeFailedChapterPlaceholder(
+              task.index,
+              task.url,
+            );
           }
         } catch (e) {
           const isChallenge = e instanceof SecurityChallengeError;
@@ -218,11 +239,19 @@ export class ScrapeService {
             url: task.url,
             error: (e as Error).message,
           });
-          this.deps.log.error(`Dropped ch.${task.index + 1}: ${(e as Error).message}`);
+          this.deps.log.error(
+            `Dropped ch.${task.index + 1}: ${(e as Error).message}`,
+          );
+          slots[task.index] = makeFailedChapterPlaceholder(
+            task.index,
+            task.url,
+          );
         } finally {
           try {
             await page.close().catch(() => {});
-          } catch { /* already closed */ }
+          } catch {
+            /* already closed */
+          }
           completed++;
           await maybePersist();
         }
@@ -247,7 +276,9 @@ export class ScrapeService {
         .filter((c): c is Chapter => c !== null)
         .sort((a, b) => a.index - b.index);
 
-      this.deps.log.info(`Queue complete: ${chapters.length} ok, ${errors.length} failed`);
+      this.deps.log.info(
+        `Queue complete: ${chapters.length} ok, ${errors.length} failed`,
+      );
 
       // EPUB
       if (job.output.epub && chapters.length > 0) {
@@ -281,4 +312,14 @@ function delay(ms: number): Promise<void> {
 
 function randomInt(min: number, max: number): number {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function makeFailedChapterPlaceholder(index: number, url: string): Chapter {
+  return {
+    index: index + 1,
+    title: `Chapter ${index + 1} (failed to scrape)`,
+    url,
+    htmlContent: "<p><em>This chapter could not be scraped.</em></p>",
+    wordCount: 0,
+  };
 }

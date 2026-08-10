@@ -17,7 +17,12 @@
 //  a partial script is a TUI bug masquerading as a test failure.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Cancel, type Cancel as CancelType, type PromptProvider, type SelectOption } from "./PromptProvider.js";
+import {
+  Cancel,
+  type Cancel as CancelType,
+  type PromptProvider,
+  type SelectOption,
+} from "./PromptProvider.js";
 
 type AnyAnswer = string | boolean | CancelType;
 
@@ -37,7 +42,10 @@ export class ScriptedPromptProvider implements PromptProvider {
   private next = 0;
   readonly calls: RecordedCall[] = [];
   /** Spinner start/stop pairs are appended here for assertion (NoTty-safe). */
-  readonly spinnerEvents: Array<{ action: "start" | "stop" | "fail" | "succeed"; text?: string }> = [];
+  readonly spinnerEvents: Array<{
+    action: "start" | "stop" | "fail" | "succeed" | "message";
+    text?: string;
+  }> = [];
 
   constructor(script: AnyAnswer[] = []) {
     this.script = script;
@@ -72,15 +80,28 @@ export class ScriptedPromptProvider implements PromptProvider {
     });
     const a = this.nextAnswer();
     if (a === Cancel) return Cancel;
-    if (typeof a === "boolean") throw new Error(`ScriptedPromptProvider.select got boolean for "${opts.message}"`);
+    if (typeof a === "boolean")
+      throw new Error(
+        `ScriptedPromptProvider.select got boolean for "${opts.message}"`,
+      );
     return a as T;
   }
 
-  async confirm(opts: { message: string; initial?: boolean }): Promise<boolean | CancelType> {
-    this.calls.push({ kind: "confirm", message: opts.message, initial: opts.initial });
+  async confirm(opts: {
+    message: string;
+    initial?: boolean;
+  }): Promise<boolean | CancelType> {
+    this.calls.push({
+      kind: "confirm",
+      message: opts.message,
+      initial: opts.initial,
+    });
     const a = this.nextAnswer();
     if (a === Cancel) return Cancel;
-    if (typeof a !== "boolean") throw new Error(`ScriptedPromptProvider.confirm got non-boolean for "${opts.message}"`);
+    if (typeof a !== "boolean")
+      throw new Error(
+        `ScriptedPromptProvider.confirm got non-boolean for "${opts.message}"`,
+      );
     return a;
   }
 
@@ -100,7 +121,10 @@ export class ScriptedPromptProvider implements PromptProvider {
     });
     let a = this.nextAnswer();
     if (a === Cancel) return Cancel;
-    if (typeof a !== "string") throw new Error(`ScriptedPromptProvider.text got non-string for "${opts.message}"`);
+    if (typeof a !== "string")
+      throw new Error(
+        `ScriptedPromptProvider.text got non-string for "${opts.message}"`,
+      );
     // clack re-prompts on validation failure; mirror that by consuming the
     // next scripted answer each time the validator rejects the current one.
     while (opts.validate) {
@@ -113,7 +137,10 @@ export class ScriptedPromptProvider implements PromptProvider {
       }
       a = this.nextAnswer();
       if (a === Cancel) return Cancel;
-      if (typeof a !== "string") throw new Error(`ScriptedPromptProvider.text got non-string for "${opts.message}"`);
+      if (typeof a !== "string")
+        throw new Error(
+          `ScriptedPromptProvider.text got non-string for "${opts.message}"`,
+        );
     }
     return a;
   }
@@ -123,12 +150,14 @@ export class ScriptedPromptProvider implements PromptProvider {
     stop(text?: string): void;
     fail(text?: string): void;
     succeed(text?: string): void;
+    message?(text: string): void;
   } {
     return {
       start: (text) => this.spinnerEvents.push({ action: "start", text }),
       stop: (text) => this.spinnerEvents.push({ action: "stop", text }),
       fail: (text) => this.spinnerEvents.push({ action: "fail", text }),
       succeed: (text) => this.spinnerEvents.push({ action: "succeed", text }),
+      message: (text) => this.spinnerEvents.push({ action: "message", text }),
     };
   }
 

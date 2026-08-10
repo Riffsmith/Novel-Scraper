@@ -26,21 +26,23 @@ export class ClackUIAdapter implements UIAdapter {
   }
 
   emit(e: ScrapeEvent): void {
-    // Forward to any live observer (Phase 4 TaskScreen / registry) BEFORE
+    // Forward to any live observer (TaskScreen's progress-bar wiring) BEFORE
     // the per-event log line so progress counts are coherent with the line.
+    // Routine, high-frequency events (chapter.done, discovery.progress,
+    // checkpoint.saved) are intentionally NOT logged here - they drive the
+    // TaskScreen spinner instead of scrolling the terminal. Only warnings,
+    // errors, and one-time milestones are logged persistently.
     if (this.eventCb) this.eventCb(e);
     switch (e.type) {
       case "discovery.started":
         this.prompt.log("info", `Discovery started: ${e.url}`);
         break;
       case "discovery.progress":
-        this.prompt.log("info", `Discovered ${e.found} chapters across ${e.pages} pages`);
         break;
       case "discovery.done":
         this.prompt.log("success", `Discovered ${e.urls.length} chapter URLs`);
         break;
       case "chapter.done":
-        this.prompt.log("success", `ch.${e.index}: ${e.title} (${e.words} words)`);
         if (this.progressCb) this.progressCb(e.index, -1);
         break;
       case "chapter.retry":
@@ -56,7 +58,6 @@ export class ClackUIAdapter implements UIAdapter {
         this.prompt.log("warn", `Anti-bot challenge waiting on ${e.url}`);
         break;
       case "checkpoint.saved":
-        this.prompt.log("info", `Checkpoint saved (${e.done} done) - session ${e.sessionId}`);
         break;
       case "epub.started":
         this.prompt.log("info", "EPUB packaging started");

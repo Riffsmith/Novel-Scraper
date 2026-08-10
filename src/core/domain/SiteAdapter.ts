@@ -25,6 +25,8 @@
 
 import type { PageHandle } from "../../ports/BrowserPort.js";
 import type { WaitUntil } from "./AppConfig.js";
+import type { AutoNovelVolume } from "./Volume.js";
+import type { Footnote } from "./Footnote.js";
 
 // ── Metadata scraped automatically from a novel's landing page ────────────────
 export interface AutoNovelMetadata {
@@ -35,11 +37,18 @@ export interface AutoNovelMetadata {
 }
 
 // ── Full result of an auto-scrape probe (metadata + chapter URLs) ───────────
+//
+// `volumes?` is additive-optional (ADR-P7-B): site adapters that walk a
+// volume-grouped catalog (webnovel) populate it; flat-catalog adapters
+// (wtr-lab, novelfire) leave it `undefined` and the EPUB writer falls through
+// its existing no-volumes path. Callers resolve volumes via
+// `result.volumes ?? job.volumes ?? undefined`.
 export interface AutoScrapeResult {
   siteId: string;
   novelUrl: string;
   metadata: AutoNovelMetadata;
   chapterLinks: string[];
+  volumes?: AutoNovelVolume[];
 }
 
 // ── SiteAdapter - one per supported site. Add new sites by implementing this
@@ -63,6 +72,41 @@ export interface SiteAdapter {
     novelUrl: string,
     opts: { waitUntil: WaitUntil; navTimeoutMs: number },
   ): Promise<string[]>;
+
+  /**
+   * Optional catalog-volume walk (ADR-P7-B). Site adapters that walk a
+   * volume-grouped catalog return one `AutoNovelVolume` per visible volume
+   * group (name + ordered chapter URLs). Flat-catalog adapters leave this
+   * unset; callers check `result.volumes ?? job.volumes ?? undefined`.
+   *
+   * The adapter is the single DOM-knowledge authority for volume grouping;
+   * the EPUB writer is the single index authority (resolves URL -> Chapter
+   * at build time per ADR-P7-C).
+   */
+  scrapeVolumes?(
+    page: PageHandle,
+    novelUrl: string,
+    opts: { waitUntil: WaitUntil; navTimeoutMs: number },
+  ): Promise<AutoNovelVolume[] | undefined>;
+
+  /**
+   * Optional per-chapter content post-hook (ADR-P7-D). Runs AFTER the
+   * generic `ChapterExtractor` extraction (challenge wait-out, content-
+   * selector pull, exclude-selector strip) and BEFORE the EPUB writer's
+   * `toXhtml()` post-process. The hook's returned `htmlContent` BYPASSES
+   * `sanitize-html` (the webnovel adapter applies its own allow-list via
+   * the reference's blacklist). Adapters that don't define this hook keep
+   * the existing `sanitize-html` path.
+   *
+   * `footnotes` (when present on the return) are appended to the chapter's
+   * `htmlContent` by the hook itself - the EPUB writer needs no separate
+   * footnote handling. The `Chapter` domain shape is unchanged.
+   */
+  processChapterContent?(input: {
+    rawHtml: string;
+    title: string;
+    footnotes?: Footnote[];
+  }): { htmlContent: string; footnotes?: Footnote[] };
 
   // ── Defaults pre-filled into the auto-scrape review screen ─────────────
   // (the user can always override these before the scrape starts)

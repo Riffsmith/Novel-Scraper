@@ -25,7 +25,10 @@ export class ResumeScreen implements Screen {
     while (true) {
       const summaries = await ctx.sessions.list();
       if (summaries.length === 0) {
-        ctx.prompt.log("warn", "No saved sessions. Run a scrape first, then this screen lists your checkpoints.");
+        ctx.prompt.log(
+          "warn",
+          "No saved sessions. Run a scrape first, then this screen lists your checkpoints.",
+        );
         return { action: "pop" };
       }
 
@@ -53,11 +56,14 @@ export class ResumeScreen implements Screen {
         const id = choice.slice("session:".length);
         const session = await ctx.sessions.load(id);
         if (!session) {
-          ctx.prompt.log("warn", `Session ${id} could not be loaded (it may have been deleted).`);
+          ctx.prompt.log(
+            "warn",
+            `Session ${id} could not be loaded (it may have been deleted).`,
+          );
           continue;
         }
         return {
-          action: "push",
+          action: "replace",
           screen: "task",
           params: mkResumeParams(session),
         };
@@ -89,7 +95,11 @@ export class ResumeScreen implements Screen {
       const id = picked.slice("del:".length);
       const ok = await ctx.sessions.delete(id);
       if (ok) ctx.prompt.log("success", "Session deleted.");
-      else ctx.prompt.log("warn", "Session could not be deleted (already removed?).");
+      else
+        ctx.prompt.log(
+          "warn",
+          "Session could not be deleted (already removed?).",
+        );
     }
   }
 }

@@ -449,7 +449,7 @@ describe("Resume + error reporting", () => {
     expect(findLog(prompt, "success", "Session deleted.")).toBe(true);
   });
 
-  it("selecting a session pushes TaskScreen with the resume params", async () => {
+  it("selecting a session replaces with TaskScreen with the resume params", async () => {
     const store = new FakeSessionStore();
     const summary = { id: "aaa", novelTitle: "Book A", domain: "a.com", totalChapters: 10, completedCount: 2, updatedAt: "2026-01-01T00:00:00.000Z" };
     store.set([summary]);
@@ -487,8 +487,8 @@ describe("Resume + error reporting", () => {
     ctx.sessions = store;
 
     const result = await new ResumeScreen().render(ctx);
-    expect(result.action).toBe("push");
-    expect(result).toMatchObject({ action: "push", screen: "task" });
+    expect(result.action).toBe("replace");
+    expect(result).toMatchObject({ action: "replace", screen: "task" });
     const params = (result as { params: { resumeSession: ScrapeSession } }).params;
     expect(params.resumeSession.id).toBe("aaa");
     expect(params.resumeSession.chapterUrls).toEqual(["https://a.com/c1", "https://a.com/c2"]);

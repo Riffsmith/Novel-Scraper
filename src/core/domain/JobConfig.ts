@@ -9,6 +9,7 @@
 import type { Chapter } from "./Chapter.js";
 import type { NovelMetadata } from "./NovelMetadata.js";
 import type { NextLocator } from "./Locator.js";
+import type { Volume } from "./Volume.js";
 
 export type ScrapeMethod = "toc" | "sequential";
 
@@ -48,6 +49,13 @@ export interface JobConfig extends ScraperConfig {
   output: {
     epub: boolean;
   };
+
+  // Additive-optional (ADR-P7-A/B): populated by site adapters that walk a
+  // volume-grouped catalog (webnovel) and forwarded to EpubWriter at build
+  // time. Absent for flat-catalog sites (wtr-lab, novelfire). Per AGENTS.md:
+  // schema additions are additive-optional only, so field default on read
+  // is `undefined`.
+  volumes?: Volume[];
 }
 
 // ── Error record ───────────────────────────────────────────────────────────

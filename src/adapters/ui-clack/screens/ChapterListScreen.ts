@@ -57,14 +57,17 @@ export class ChapterListScreen implements Screen {
     let current = [...cfg.urls];
 
     while (true) {
-      ctx.prompt.log("info", (cfg.title ?? "Chapter List Review"));
+      ctx.prompt.log("info", cfg.title ?? "Chapter List Review");
       ctx.prompt.log("info", `Found ${current.length} chapter(s)`);
       printChapterList(ctx, current);
 
       const action = await ctx.prompt.select<Action>({
         message: "What would you like to do?",
         options: [
-          { value: "proceed", label: `Proceed with all ${current.length} chapters` },
+          {
+            value: "proceed",
+            label: `Proceed with all ${current.length} chapters`,
+          },
           { value: "remove", label: "Remove chapters by index or range" },
           { value: "add", label: "Add chapter URLs" },
           { value: "reverse", label: "Reverse the order (first becomes last)" },
@@ -79,7 +82,9 @@ export class ChapterListScreen implements Screen {
       if (action === "proceed") {
         if (current.length === 0) {
           ctx.prompt.log("warn", "No chapters left - nothing to scrape.");
-          await ctx.prompt.text({ message: "Press Enter to return..." }).catch(() => {});
+          await ctx.prompt
+            .text({ message: "Press Enter to return..." })
+            .catch(() => {});
           return { action: "pop" };
         }
         // Manual path: push TaskScreen to scrape the edited list straight
@@ -88,7 +93,7 @@ export class ChapterListScreen implements Screen {
         // §2.6, ChapterListScreen is a pure-in-adapter helper here too.
         if (cfg.manual && cfg.job) {
           return {
-            action: "push",
+            action: "replace",
             screen: "task",
             params: {
               job: cfg.job,
@@ -110,13 +115,17 @@ export class ChapterListScreen implements Screen {
       }
       if (action === "reverse") {
         const ok = await ctx.prompt.confirm({
-          message: "Reverse the order? (first becomes last, last becomes first)",
+          message:
+            "Reverse the order? (first becomes last, last becomes first)",
           initial: false,
         });
         if (ok === Cancel) continue;
         if (!ok) continue;
         current.reverse();
-        ctx.prompt.log("success", `Order reversed - now starts at: ${current[0] ?? "(none)"}`);
+        ctx.prompt.log(
+          "success",
+          `Order reversed - now starts at: ${current[0] ?? "(none)"}`,
+        );
         continue;
       }
       if (action === "view") {
@@ -124,7 +133,10 @@ export class ChapterListScreen implements Screen {
         continue;
       }
       if (action === "remove") {
-        ctx.prompt.log("info", "Enter indices or ranges to remove, separated by commas.");
+        ctx.prompt.log(
+          "info",
+          "Enter indices or ranges to remove, separated by commas.",
+        );
         ctx.prompt.log("dim", "Examples:  5  |  10-20  |  5, 10-20, 99");
         const r = await ctx.prompt.text({
           message: "Indices / ranges to remove:",
@@ -136,7 +148,10 @@ export class ChapterListScreen implements Screen {
         const toRemove = parseRanges(r, current.length);
         const before = current.length;
         current = current.filter((_, i) => !toRemove.has(i + 1));
-        ctx.prompt.log("success", `Removed ${before - current.length} chapter(s). ${current.length} remaining.`);
+        ctx.prompt.log(
+          "success",
+          `Removed ${before - current.length} chapter(s). ${current.length} remaining.`,
+        );
         continue;
       }
       if (action === "add") {
@@ -159,17 +174,27 @@ export class ChapterListScreen implements Screen {
             }
           });
         current.push(...added);
-        ctx.prompt.log("success", `Added ${added.length} URL(s). ${current.length} total.`);
+        ctx.prompt.log(
+          "success",
+          `Added ${added.length} URL(s). ${current.length} total.`,
+        );
         continue;
       }
     }
   }
 }
 
-function printChapterList(ctx: ShellContext, links: string[], maxDisplay = 50): void {
+function printChapterList(
+  ctx: ShellContext,
+  links: string[],
+  maxDisplay = 50,
+): void {
   const show = links.slice(0, maxDisplay);
   show.forEach((link, i) => {
-    ctx.prompt.log("dim", `  ${String(i + 1).padStart(5)}.  ${truncateUrl(link, 80)}`);
+    ctx.prompt.log(
+      "dim",
+      `  ${String(i + 1).padStart(5)}.  ${truncateUrl(link, 80)}`,
+    );
   });
   if (links.length > maxDisplay) {
     ctx.prompt.log("dim", `         ... and ${links.length - maxDisplay} more`);

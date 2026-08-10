@@ -13,6 +13,7 @@ import { v4 as uuid } from "uuid";
 
 import type { Chapter } from "../../core/domain/Chapter.js";
 import type { NovelMetadata } from "../../core/domain/NovelMetadata.js";
+import type { Volume } from "../../core/domain/Volume.js";
 
 import * as T from "./templates.js";
 import { foglihtenFontBuffer } from "./assets.js";
@@ -40,12 +41,21 @@ export class ArchiverEpubWriter implements EpubWriter {
     meta: NovelMetadata,
     outputDir: string,
     filename: string,
+    volumes?: Volume[],
   ): Promise<{ path: string }> {
     fs.mkdirSync(outputDir, { recursive: true });
 
     const outFilename = filename.endsWith(".epub") ? filename : `${filename}.epub`;
     const outputPath = path.resolve(outputDir, outFilename);
     const bookId = `urn:uuid:${uuid()}`;
+
+    // Resolve volume groups once so the writer is the single index authority
+    // (ADR-P7-C). The same resolved groups flow into manifest/spine/nav/ncx so
+    // all four stay consistent; downstream `T.*` calls re-resolve from the
+    // same `volumes` array (cheap map of `chapter.url -> chapter`).
+    const { groups } = T.resolveVolumeGroups(chapters, volumes);
+    const volumesWithChapters = groups.filter((g) => g.chapters.length > 0);
+    const hasVolumes = volumesWithChapters.length > 0;
 
     let coverBuf: Buffer | null = null;
 
@@ -91,13 +101,13 @@ export class ArchiverEpubWriter implements EpubWriter {
     } as Parameters<typeof archive.append>[1]);
 
     archive.append(T.containerXml(), { name: "META-INF/container.xml" });
-    archive.append(T.contentOpf(meta, chapters, hasCover, bookId), {
+    archive.append(T.contentOpf(meta, chapters, hasCover, bookId, volumes), {
       name: "OEBPS/content.opf",
     });
-    archive.append(T.navXhtml(meta, chapters, hasCover), {
+    archive.append(T.navXhtml(meta, chapters, hasCover, volumes), {
       name: "OEBPS/nav.xhtml",
     });
-    archive.append(T.tocNcx(meta, chapters, bookId, hasCover), {
+    archive.append(T.tocNcx(meta, chapters, bookId, hasCover, volumes), {
       name: "OEBPS/toc.ncx",
     });
     archive.append(T.stylesheet(), { name: "OEBPS/styles/style.css" });
@@ -116,6 +126,18 @@ export class ArchiverEpubWriter implements EpubWriter {
     if (hasCover && coverBuf) {
       archive.append(coverBuf, { name: "OEBPS/images/cover.jpg" });
       archive.append(T.coverXhtml(meta), { name: "OEBPS/cover.xhtml" });
+    }
+
+    // Volume pages - one per volume that actually has chapters (matches the
+    // reference's "skip volumes with no chapters" guard in tocBuilder.mjs and
+    // manifestBuilder.mjs). 1-indexed `volume-N.xhtml` to match the spine and
+    // nav references emitted upstream.
+    if (hasVolumes) {
+      for (const g of volumesWithChapters) {
+        archive.append(T.volumeXhtml(g.volume, g.index), {
+          name: `OEBPS/volumes/volume-${g.index + 1}.xhtml`,
+        });
+      }
     }
 
     for (const ch of chapters) {
@@ -137,6 +159,7 @@ export class ArchiverEpubWriter implements EpubWriter {
       sizeKb,
       chapters: chapters.length,
       hasCover,
+      volumes: volumesWithChapters.length,
     });
 
     return { path: outputPath };

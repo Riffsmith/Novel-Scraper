@@ -9,6 +9,7 @@
 
 import type { Chapter } from "./Chapter.js";
 import type { ScraperConfig } from "./JobConfig.js";
+import type { Volume } from "./Volume.js";
 
 export type SessionStatus = "in-progress";
 
@@ -27,6 +28,13 @@ export interface ScrapeSession {
 
   completedChapters: import("./Chapter.js").Chapter[]; // full chapters, not just indices
   errors: import("./JobConfig.js").ScrapeError[]; // retryable failures
+
+  // Additive-optional (ADR-P7-A/B): the volume map discovered by a site
+  // adapter's scrapeVolumes() walk. Absent for flat-catalog sites
+  // (wtr-lab, novelfire) and on pre-Phase-7 session files (the 2->3
+  // migration treats missing as `undefined`). Round-trips through
+  // ScrapeService.run -> EpubWriter at build resume time.
+  volumes?: Volume[];
 }
 
 // Lightweight listing shape for the "resume a scrape" picker
