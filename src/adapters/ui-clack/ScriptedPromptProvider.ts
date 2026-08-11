@@ -15,6 +15,10 @@
 //
 //  Any spurious call (script exhausted) throws - tests must be exhaustive;
 //  a partial script is a TUI bug masquerading as a test failure.
+//
+//  `note(message, title)` (ADR-P3-FIX-TUI) acquires no input so it doesn't
+//  consume a scripted answer; it appends to `noteCalls` and to `calls` so
+//  tests can assert either.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -27,7 +31,7 @@ import {
 type AnyAnswer = string | boolean | CancelType;
 
 export interface RecordedCall {
-  kind: "select" | "confirm" | "text" | "log" | "spinner";
+  kind: "select" | "confirm" | "text" | "log" | "spinner" | "note";
   message: string;
   options?: SelectOption<string>[];
   initial?: unknown;
@@ -35,6 +39,7 @@ export interface RecordedCall {
   placeholder?: string;
   logKind?: "info" | "success" | "warn" | "error" | "dim";
   logMsg?: string;
+  noteTitle?: string;
 }
 
 export class ScriptedPromptProvider implements PromptProvider {
@@ -46,6 +51,8 @@ export class ScriptedPromptProvider implements PromptProvider {
     action: "start" | "stop" | "fail" | "succeed" | "message";
     text?: string;
   }> = [];
+  /** `note()` calls are appended here for assertion (ADR-P3-FIX-TUI). */
+  readonly noteCalls: Array<{ message?: string; title?: string }> = [];
 
   constructor(script: AnyAnswer[] = []) {
     this.script = script;
@@ -163,5 +170,10 @@ export class ScriptedPromptProvider implements PromptProvider {
 
   log(kind: "info" | "success" | "warn" | "error" | "dim", msg: string): void {
     this.calls.push({ kind: "log", message: msg, logKind: kind, logMsg: msg });
+  }
+
+  note(message?: string, title?: string): void {
+    this.noteCalls.push({ message, title });
+    this.calls.push({ kind: "note", message: message ?? "", noteTitle: title });
   }
 }

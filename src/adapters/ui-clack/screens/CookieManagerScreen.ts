@@ -23,6 +23,7 @@ import {
   validateDomain,
   validateProfileNameChars,
   validateUrl,
+  normalizeUrl,
 } from "../validation.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
 
@@ -441,7 +442,7 @@ export class CookieManagerScreen implements Screen {
 
     const loginUrl = await ctx.prompt.text({
       message: "Page to open first:",
-      initial: `https://${domain}`,
+      placeholder: `https://${domain}/login`,
       validate: validateUrl,
     });
     if (loginUrl === Cancel) return;
@@ -460,7 +461,7 @@ export class CookieManagerScreen implements Screen {
     spin.start("Launching browser...");
     let session;
     try {
-      session = await beginCapture(deps, loginUrl.trim());
+      session = await beginCapture(deps, normalizeUrl(loginUrl));
     } catch (e) {
       spin.fail("Failed to launch browser or open the login page.");
       ctx.prompt.log("error", `Browser login capture failed: ${(e as Error).message}`);

@@ -361,37 +361,182 @@ byte-identical" regression test).
   defaults to `[]` so no-volume path emits byte-identical output - ADR-P7-A
   guarantee).
 
-## 4. Pipeline - PENDING
+## 4. Pipeline - COMPLETED
 
 Wires volumes through `ChapterExtractor` -> `ScrapeService.run` -> `runJob` -> TUI.
-Four sub-phases. This phase adds the `collectFootnotes` SiteAdapter method (per
-the plan note - D5 deviation). The `ScrapeService.run` signature gains a
-trailing-optional `volumes` argument that's forwarded to `EpubWriter.write`.
+Four sub-phases landed in one batch (1 modified SiteAdapter.ts, 1 modified
+ChapterExtractor.ts, 1 modified ScrapeService.ts, 1 modified runJob.ts, 1
+modified WebnovelAdapter.ts, 4 modified TUI screens):
 
-## 5. Evidence - PARTIAL (Adapter + Epub sections done; Pipeline pending)
+### Pipeline Phase 1 - `ChapterExtractor` invokes `SiteAdapter.collectFootnotes` + `processChapterContent`
+
+- `src/core/domain/SiteAdapter.ts` adds the optional
+  `collectFootnotes?(page): Promise<Footnote[] | undefined>` method (D5
+  deviation - deliberately deferred from Scaffold Phase 3 per the plan).
+- `src/adapters/site-webnovel/WebnovelAdapter.ts` implements
+  `collectFootnotes(page)`. The browser-side `FOOTNOTE_COLLECT_SCRIPT`
+  (a single string async-IIFE) runs the click-wait-collect loop entirely
+  browser-side (click `<sup>` -> wait 500ms for `.anno-drop` -> read
+  `.anno-drop-hd` + `.anno-drop-bd` -> close popup by clicking parent
+  `<p>` -> return `Footnote[]`-shaped JSON). Per AGENTS.md "page.evaluate()
+  string-constant rule", the script is a module-scope plain string
+  constant with no named inner closures (keepNames `__name` absent from
+  browser scope). Fail-soft: a `collectFootnotes` exception is swallowed
+  by the adapter and ChapterExtractor proceeds without footnotes
+  (the post-hook still runs).
+- `src/core/services/ChapterExtractor.ts` constructor gains an optional
+  `siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">`
+  arg. Inside `extract()`, after the generic extraction (challenge wait-out
+  + content-selector pull + exclude-selector strip + cheerio post-process +
+  page `<title>` fallback), if `siteAdapter?.processChapterContent` is set:
+  1. If `collectFootnotes` is set, call it on the live page (defensive
+     try-catch warns on a throw; the post-hook then runs with
+     `footnotes ?? undefined`).
+  2. Call `processChapterContent({ rawHtml: root.html(), title, footnotes })`
+     and use its returned `htmlContent` as `clean`, BYPASSING `sanitizeHtml`
+     (the adapter supplies its own allow-list via the reference's blacklist).
+  When the adapter hooks are unset, the existing `sanitizeHtml` path runs
+  byte-identical to today (regression-guarded by `tests/chapter-extractor.test.ts`).
+
+### Pipeline Phase 2 - `ScrapeService.run` accepts `volumes?` and forwards to `EpubWriter`
+
+- `src/core/services/ScrapeService.ts` `deps` constructor gains an optional
+  `siteAdapter?` field that propagates to `new ChapterExtractor(log, siteAdapter)`.
+  D6 deviation: injected as a constructor deps field (NOT a `JobConfig` field,
+  NOT a `run()` arg) because the adapter is lifecycle-scoped to the
+  composition root, not data-scoped to a job. The `Pick<SiteAdapter,
+  "processChapterContent" | "collectFootnotes">` narrowing keeps the test
+  doubles honest (ChapterExtractor + ScrapeService only see the two hooks
+  the extractor actually calls).
+- `ScrapeService.run` gains a trailing-optional `volumes?: Volume[]` arg.
+  Resume path: `resume?.session?.volumes ?? volumes ?? job.volumes ?? undefined`
+  - session checkpoint is the resume source of truth and overrides the
+  caller arg (the session persists `volumes` via the Scaffold Phase 3
+  `ScrapeSession.volumes?` field + the 2->3 migration). When none are set,
+  `undefined` flows to `EpubWriter.write` - its no-volumes path is
+  byte-identical to today (regression-guarded by `tests/epub-archiver.test.ts`).
+- The volume map forwards to `this.deps.epub.write(chapters, meta, outputDir,
+  filename, resolvedVolumes)` at `src/core/services/ScrapeService.ts:285-298`.
+
+### Pipeline Phase 3 - `runJob` propagates `job.volumes` to `ScrapeService.run`
+
+- `src/app/runJob.ts` invokes `scrapeService.run(job, cookies, resume, job.volumes)`
+  - the trailing-optional `volumes?` follows JobConfig's additive-optional
+  field. When `job.volumes` is undefined (manual flow / YAML job files /
+  flat-catalog adapters wtr-lab + novelfire), ScrapeService.run passes
+  undefined to EpubWriter. The CLI / YAML flow does NOT currently resolve
+  or wire a SiteAdapter (D6 deviation consequence); webnovel volumes flow
+  via the TUI auto-probe path, not the YAML CLI flow.
+- `discoverJobChapters` keeps its current `Promise<string[]>` signature.
+  Adapters that want their volumes picked up by the CLI YAML flow need a
+  future job-config schema bump (out of scope per the plan §"Open items
+  requiring follow-up"). The TUI flow already plumbs volumes into the
+  JobConfig via `buildQuickAutoConfig` + `assembleAutoJob` (Pipeline Phase 4).
+
+### Pipeline Phase 4 - TUI `AutoProbeScreen` / `AutoCustomizeScreen` attach volumes + adapter
+
+- `src/adapters/ui-clack/screens/AutoProbeScreen.ts` invokes
+  `adapter.scrapeVolumes?` (when present) after `adapter.scrapeChapterLinks`
+  and sets `auto.volumes` on the `AutoScrapeResult`. Fail-soft: a
+  `scrapeVolumes` throw is logged as `warn` and the EPUB falls back to its
+  no-volumes path (flat list). `renderScanSummary` adds a "Volumes found:
+  N" line when volumes are non-empty. `buildQuickAutoConfig` flows
+  `auto.volumes` onto `JobConfig.volumes`. The fast-path confirm pushes
+  TaskScreen with `siteAdapter: adapter` so ScrapeService can wire
+  `collectFootnotes` + `processChapterContent` into ChapterExtractor.
+  Customize path forwards `volumes` through the ChapterListScreen's
+  replaceParams bundle.
+- `src/adapters/ui-clack/screens/AutoCustomizeScreen.ts` `assembleAutoJob`
+  sets `JobConfig.volumes = params.auto.volumes` so the customize path -
+  which can re-edit via the review group - keeps the volume map. The
+  TaskScreen push forwards `siteAdapter: p.adapter` so the same hook
+  wiring applies.
+- `src/adapters/ui-clack/screens/ChapterListScreen.ts` `ChapterListParams`
+  gains an optional `volumes?: AutoNovelVolume[]` param (Pipeline Phase 4
+  minor frontend addition). The review surface renders a per-volume
+  line "Volume: [name] - N chapters" above the flat chapter list. No
+  domain change.
+- `src/adapters/ui-clack/screens/TaskScreen.ts` `TaskScreenParams` gains
+  an optional `siteAdapter?` field wired into the `ScrapeService`
+  constructor deps. The `scrapeService.run(job, cookies, resume, job.volumes)`
+  call forwards the JobConfig's volumes straight to EpubWriter.
+
+### Tests added in Pipeline
+
+`tests/webnovel-pipeline.test.ts` (NEW) - 9 tests:
+
+1. `ChapterExtractor` runs `adapter.processChapterContent` after generic
+   extraction and the hook output BYPASSES `sanitize-html` (the adapter's
+   blacklisted tag / class strip runs but `sanitize-html` would have allowed
+   `<i>` and preserved the `.para-comment` text).
+2. `ChapterExtractor` falls through to `sanitize-html` when the adapter leaves
+   `processChapterContent` unset (flat-catalog adapter regression baseline).
+3. `ChapterExtractor` invokes `collectFootnotes` before `processChapterContent`
+   when adapter provides both (D5 deviation) - the RecordingPage records the
+   evaluateScript call sequence and the test asserts the footnote section is
+   emitted into the chapter htmlContent.
+4. `collectFootnotes` fail-soft path: an adapter swallowing the browser-side
+   throw and returning `undefined` does not abort chapter extraction.
+5. `ScrapeService.run` forwards the trailing-optional `volumes?` arg to
+   `EpubWriter.write` (RecordingEpubWriter captures the call args).
+6. `ScrapeService.run` forwards `undefined` to `EpubWriter.write` when no
+   volumes are provided.
+7. On resume, `session.volumes` (when set) overrides the caller-supplied
+   `volumes?` arg (resume checkpoint is the source of truth).
+8. `ScrapeService.deps.siteAdapter` propagates to `ChapterExtractor`: an
+   end-to-end run with the webnovel adapter wired produces chapters carrying
+   the adapter's signature `<h2 class="chapter-page-title">` wrapping.
+9. End-to-end: `ScrapeService.run` invoking a real `ArchiverEpubWriter`
+   with volumes produces a valid EPUB archive containing
+   `OEBPS/volumes/volume-1.xhtml` + `volume-2.xhtml` pages (drives the
+   full Pipeline Phase 2 + 3 contract through the writer).
+
+### Acceptance check for Pipeline
+
+- `pnpm typecheck` -> green (zero errors).
+- `pnpm test` -> 190 passed (vs 181 before Pipeline); 1 skipped
+  (`CLOAKBROWSER_BINARY_AVAILABLE` acceptance gate).
+- `pnpm lint` -> unchanged baseline (48 problems, all pre-existing in
+  `reference/`/other test files; zero new errors from Pipeline).
+- All existing WTR-Lab / NovelFire pipeline tests (`tests/scrape-service.test.ts`,
+  `tests/chapter-extractor.test.ts`) remain green - the no-adapter path is
+  byte-identical to today (Pipeline respects the ADR-P7-A
+  no-behaviour-change guarantee for non-webnovel adapters).
+
+## 5. Evidence - COMPLETED
 
 Docs + parity tests locking the behaviour in:
 
-- `docs/02-site-adapters.md` §3 webnovel cookbook entry - landed
-  (covers URL match, TOC URL, URL normalisation, metadata selectors, chapter
-  list extraction, volume walk -> volume groups, `processChapterContent`
-  post-hook, extraction defaults, string-evaluate rule, verification stamp).
-- Adapter parity tests - see §2 above; 26 new tests in
-  `tests/webnovel-adapter.test.ts`.
-- EPUB volume-page parity tests - see §3 above; 8 new tests in
-  `tests/epub-archiver.test.ts`.
+- `docs/02-site-adapters.md` §3 webnovel cookbook entry - extended with
+  `§3.7.1 Footnote collection (collectFootnotes, D5 deviation)`, `§3.9
+  String-evaluate rule` updated to list `FOOTNOTE_COLLECT_SCRIPT`, `§3.10
+  Pipeline integration (Pipeline Phase 1 + 2 + 4)` detailing the
+  end-to-end wiring, `§3.11 Verification status` updated to reflect the
+  Pipeline lived through (full Adapter -> ChapterExtractor -> ScrapeService
+  -> EpubWriter flow now integral).
+- Adapter parity tests - `tests/webnovel-adapter.test.ts` (NEW in the
+  Adapter phase) - 26 tests; covers pure-function surfaces. The
+  Pipeline-named phase extends coverage to the integration through
+  `tests/webnovel-pipeline.test.ts` (9 tests, see §4 above).
+- EPUB volume-page parity tests - 8 tests in `tests/epub-archiver.test.ts`
+  (added in the Epub phase); the Pipeline-named phase adds one end-to-end
+  test through `ScrapeService -> ArchiverEpubWriter` proving the volume
+  pages emit in a real EPUB archive (§4 test 9 above).
 - Deviation log - D1 (omitted "Unlocked Chapters" line), D2 (shared
   `walkCatalogVolumes` helper), D3 (text-node re-escape drop), D4 (volume
   fallback name `Volume <index>` instead of `Date.now()`), D5
-  (`collectFootnotes` deferred to Pipeline Phase 1) all marked as
-  IMPLEMENTED in their `deviation-log.md` entries.
-- Pipeline Phase 1's deviation-log entry (`collectFootnotes` lands in
-  Pipeline Phase 1) stays PENDING until that phase lands.
-- Real-binary acceptance test (`tests/acceptance.test.ts` extension gated on
-  `CLOAKBROWSER_BINARY_AVAILABLE=1`) - deferred to a follow-up pass: covers
-  the live `scrapeMetadata` / `scrapeChapterLinks` / `scrapeVolumes` paths
-  that exercise the string scripts through a real browser context. Currently
-  those code paths have type+lint coverage but no execution test.
+  (`collectFootnotes` now IMPLEMENTED via Pipeline Phase 1 - was the lone
+  DEFERRED entry across the Adapter + Epub phases), D6 (new entry:
+  `siteAdapter` injected as `ScrapeService.deps` field, not via `JobConfig`)
+  - all marked IMPLEMENTED in their `deviation-log.md` entries.
+- Real-binary acceptance test (`tests/acceptance.test.ts` extension gated
+  on `CLOAKBROWSER_BINARY_AVAILABLE=1`) - still deferred to a follow-up
+  pass for the live `scrapeMetadata` / `scrapeChapterLinks` /
+  `scrapeVolumes` / `collectFootnotes` paths that exercise the string
+  scripts through a real browser context. Currently those code paths
+  have type+lint+integration test coverage but no live-binary execution
+  test (the 9 new Pipeline tests cover the hook contract via the
+  FakeBrowserPort + RecordingPage stubs).
 
 
 ---

@@ -135,4 +135,8 @@ export const clackPromptProvider: PromptProvider = {
         break;
     }
   },
+
+  note(message?: string, title?: string): void {
+    clack.note(message, title);
+  },
 };

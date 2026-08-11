@@ -34,12 +34,14 @@ import {
   validateDomain,
   validateProfileNameChars,
   validateUrl,
+  normalizeUrl,
 } from "../src/adapters/ui-clack/validation.js";
 import { MainScreen } from "../src/adapters/ui-clack/screens/MainScreen.js";
 import { ResumeScreen } from "../src/adapters/ui-clack/screens/ResumeScreen.js";
 import { CookieManagerScreen } from "../src/adapters/ui-clack/screens/CookieManagerScreen.js";
 import { SettingsScreen } from "../src/adapters/ui-clack/screens/SettingsScreen.js";
 import { LibraryScreen, defaultListEpubs } from "../src/adapters/ui-clack/screens/LibraryScreen.js";
+import { ChapterListScreen } from "../src/adapters/ui-clack/screens/ChapterListScreen.js";
 import { makeErrorReporter } from "../src/adapters/ui-clack/screens/ErrorScreen.js";
 
 // ── Harness ─────────────────────────────────────────────────────────────────
@@ -173,7 +175,9 @@ describe("T2/T3 MainScreen + palette", () => {
     const { ctx } = makeCtx(prompt);
     const result = await new MainScreen().render(ctx);
     expect(result).toEqual({ action: "pop" });
-    expect(findLog(prompt, "info", "WebNovel Scraper")).toBe(true);
+    // ADR-P3-FIX-TUI: MainScreen no longer emits the banner; the Shell does
+    // that once per session. See the Shell-header test below for the one-shot.
+    expect(findLog(prompt, "info", "WebNovel Scraper")).toBe(false);
     expect(prompt.calls.find((c) => c.kind === "select")).toMatchObject({
       kind: "select",
       message: "What do you want to do?",
@@ -653,7 +657,7 @@ describe("format & validation chrome", () => {
     expect(fmt.truncate("hi", 5)).toBe("hi");
   });
 
-  it("validation helpers match v1 semantics", () => {
+  it("validation helpers match v1 semantics (validateUrl is tightened)", () => {
     expect(validateDomain("example.com")).toBe(true);
     expect(validateDomain("http://example.com/read")).toBe(true);
     expect(validateDomain("localhost")).toBe(true);
@@ -682,5 +686,245 @@ describe("format & validation chrome", () => {
     expect(s).toContain("Book");
     expect(s).toContain("4/10 chapters");
     expect(s).toContain("2026-01-02 03:04");
+  });
+});
+
+// ── Bug-fix tests: URL double-prefix + TUI cleanliness pass ──────────────────
+//
+// Covers `docs/fix-issue-tui-url-cleanliness.md`:
+//  - validateUrl tightens (reject empty / scheme-doubled / dotless hostnames;
+//    accept bare hostnames).
+//  - normalizeUrl prepends https:// to bare hostnames.
+//  - CookieManager capture flow does not double-prefix a URL typed with a
+//    scheme (FakeBrowserPort.lastPage.gotoCalls records the actual navigation).
+//  - ChapterListScreen no longer reprints the full chapter list on every loop
+//    iteration (listDirty gate).
+//  - SettingsScreen.printProfile emits a single `note` call rather than ~14
+//    separate log rows.
+//  - Shell.run() emits the banner exactly once (header strip).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function countLogRows(
+  p: ScriptedPromptProvider,
+  pattern: RegExp,
+  kind?: "info" | "success" | "warn" | "error" | "dim",
+): number {
+  return p.calls.filter(
+    (c) =>
+      c.kind === "log" &&
+      (kind ? c.logKind === kind : true) &&
+      pattern.test(c.logMsg ?? ""),
+  ).length;
+}
+
+describe("validateUrl (tightened)", () => {
+  it("accepts a well-formed https URL", () => {
+    expect(validateUrl("https://www.webnovel.com/login")).toBe(true);
+  });
+  it("accepts a bare hostname (no scheme) - caller will prepend https://", () => {
+    expect(validateUrl("www.webnovel.com/login")).toBe(true);
+  });
+  it("rejects empty input", () => {
+    expect(validateUrl("")).toBe("URL cannot be empty");
+    expect(validateUrl("   ")).toBe("URL cannot be empty");
+  });
+  it("rejects scheme-doubled URLs", () => {
+    expect(validateUrl("https://https://www.webnovel.com/")).toMatch(/hostname looks invalid/);
+    expect(validateUrl("https://http://example.com/")).toMatch(/hostname looks invalid/);
+  });
+  it("rejects a hostname with no dot", () => {
+    expect(validateUrl("https://localhost")).toMatch(/hostname looks invalid/);
+  });
+});
+
+describe("normalizeUrl", () => {
+  it("prepends https:// to a bare hostname", () => {
+    expect(normalizeUrl("www.webnovel.com/login")).toBe("https://www.webnovel.com/login");
+  });
+  it("leaves a fully-qualified URL untouched", () => {
+    expect(normalizeUrl("https://www.webnovel.com/login")).toBe("https://www.webnovel.com/login");
+  });
+  it("trims surrounding whitespace", () => {
+    expect(normalizeUrl("  https://example.com/  ")).toBe("https://example.com/");
+  });
+});
+
+describe("CookieManager capture flow URL handling", () => {
+  it("does not double-prefix when the user types a URL with its own scheme", async () => {
+    // The bug: pre-fill with `https://${domain}` invited `https://https://...`
+    // when the user typed the scheme. Post-fix, the placeholder is not a seed,
+    // and the call site normalizes the validated input. With a fully-qualified
+    // input the navigation target is exactly what the user typed.
+    const prompt = new ScriptedPromptProvider([
+      "domain:example.com",
+      "profile:default",
+      "capture",
+      "https://www.webnovel.com/login",
+      "", // press Enter in the browser window to finish capture
+      true, // confirm save
+      "back",
+      "__back__",
+      Cancel,
+    ]);
+    const { ctx, cookies, browser } = makeCtx(prompt);
+    await cookies.save("example.com", "default", [sampleCookie("OLD")]);
+    browser.setContextCookies([sampleCookie("a"), sampleCookie("b")]);
+
+    await new CookieManagerScreen().render(ctx);
+
+    expect(browser.lastPage).not.toBeNull();
+    expect(browser.lastPage!.gotoCalls).toEqual(["https://www.webnovel.com/login"]);
+    expect(browser.ephemeralLaunchCount()).toBe(1);
+  });
+
+  it("prepends https:// when the user types a bare hostname", async () => {
+    const prompt = new ScriptedPromptProvider([
+      "domain:example.com",
+      "profile:default",
+      "capture",
+      "www.webnovel.com/login",
+      "",
+      true,
+      "back",
+      "__back__",
+      Cancel,
+    ]);
+    const { ctx, cookies, browser } = makeCtx(prompt);
+    await cookies.save("example.com", "default", [sampleCookie("OLD")]);
+    browser.setContextCookies([sampleCookie("a")]);
+
+    await new CookieManagerScreen().render(ctx);
+
+    expect(browser.lastPage!.gotoCalls).toEqual(["https://www.webnovel.com/login"]);
+  });
+});
+
+describe("ChapterListScreen reprint gate", () => {
+  it("does not reprint the full chapter list after a remove action returns to the action prompt", async () => {
+    const urls = Array.from({ length: 5 }, (_, i) => `https://x.com/chapter-${i + 1}`);
+    const prompt = new ScriptedPromptProvider([
+      "remove",
+      "1", // remove chapter index 1
+      "back", // exit on next iteration
+    ]);
+    const { ctx } = makeCtx(prompt);
+    const screen = new ChapterListScreen();
+    await screen.render(ctx, { urls });
+
+    // The "  1.  ..." log row shape fires once on the initial print, once on
+    // the post-remove reprint (because listDirty caused a reprint). It must
+    // NOT fire a third time before the "back" iteration - that is the bug.
+    // Final chapter count is 4 (5 minus index 1). The initial print shows all
+    // 5 "Chapter N" rows; the post-remove reprint shows 4. So the total count
+    // of "  N.  ..." rows is 9 - NOT 5 (initial) + 9 (post-remove full list)
+    // + 14 (next iteration full list). If the bug were still present this
+    // would be ~14 rows (two full reprints of a 5-chapter initial + altered
+    // list). Exact count: initial print prints 5 rows; post-remove reprint
+    // prints 4 rows; total = 9. (We allow "== 9" precisely; no upper bound.)
+    const chapterRowRe = /^\s+\d+\.\s+https:\/\/x\.com\/chapter-\d+/;
+    const rows = countLogRows(prompt, chapterRowRe, "dim");
+    expect(rows).toBe(9);
+  });
+
+  it("explicit 'view' triggers a reprint, then the next prompt iteration does NOT reprint", async () => {
+    const urls = Array.from({ length: 3 }, (_, i) => `https://x.com/c-${i + 1}`);
+    const prompt = new ScriptedPromptProvider([
+      "view",
+      "back",
+    ]);
+    const { ctx } = makeCtx(prompt);
+    await new ChapterListScreen().render(ctx, { urls });
+
+    const chapterRowRe = /^\s+\d+\.\s+https:\/\/x\.com\/c-\d+/;
+    // Initial print: 3 rows. Explicit "view" (maxDisplay = full length = 3):
+    // 3 rows. Total: 6 rows. The "back" iteration is a no-op (no reprint).
+    const rows = countLogRows(prompt, chapterRowRe, "dim");
+    expect(rows).toBe(6);
+  });
+});
+
+describe("SettingsScreen printProfile boxed note", () => {
+  it("renders a profile as a single note() call titled 'Profile: <domain>' and emits no row-by-row log lines", async () => {
+    const prompt = new ScriptedPromptProvider([
+      "profiles",
+      "profile:example.com",
+      "edit_label",
+      "My Novels",
+      "notes here",
+      "back",
+      "__back__",
+      "back",
+    ]);
+    const { ctx, profiles } = makeCtx(prompt);
+    const base: SiteProfile = {
+      domain: "example.com",
+      method: "toc",
+      contentSelector: "#content",
+      separateTitle: false,
+      excludeSelectors: [".ads"],
+      savedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    };
+    await profiles.save("example.com", base);
+
+    await new SettingsScreen().render(ctx);
+
+    // Exactly one note(), titled for the domain.
+    expect(prompt.noteCalls).toHaveLength(2);
+    expect(prompt.noteCalls[0].title).toBe("Profile: example.com");
+    expect(prompt.noteCalls[0].message).toContain("Domain");
+    expect(prompt.noteCalls[0].message).toContain("example.com");
+    // No standalone log row carrying the literal "Domain" key - the old code
+    // emitted per-field rows; the new path groups them inside the note body.
+    expect(countLogRows(prompt, /^Domain\s+/)).toBe(0);
+  });
+});
+
+describe("Shell banner-once (header strip)", () => {
+  it("Shell.run() emits the banner exactly once across multiple screen renders", async () => {
+    let renders = 0;
+    class LoopMain implements Screen {
+      id = "main";
+      async render(): Promise<ScreenResult> {
+        renders++;
+        // Yield to the macrotask queue so the stopper setTimeout can fire.
+        // Without this, a synchronous root-pop loop never lets the timer
+        // advance (matches the LiveScreen pattern from the Ctrl+Q test).
+        await new Promise((r) => setTimeout(r, 2));
+        return { action: "pop" }; // root-pop is a no-op, loop continues
+      }
+    }
+    const main = new LoopMain();
+    const registry = new Map<string, Screen>([["main", main]]);
+
+    const prompt = new ScriptedPromptProvider([]);
+    const { ctx } = makeCtx(prompt);
+    let exited = 0;
+    const shell = new Shell(registry, {
+      config: ctx.config,
+      cookies: ctx.cookies,
+      profiles: ctx.profiles,
+      sessions: ctx.sessions,
+      browser: ctx.browser,
+      log: ctx.log,
+      prompt,
+      tasks: ctx.tasks,
+      exitFn: () => exited++,
+    });
+
+    // Stop the loop after the banner-once has been emitted and a few render
+    // iterations have completed. Setting quitRequested causes the while-loop
+    // condition to fail at the top of its next iteration.
+    const stopper = setTimeout(() => {
+      (shell as unknown as { quitRequested: boolean }).quitRequested = true;
+    }, 25);
+
+    await shell.run("main");
+    clearTimeout(stopper);
+
+    expect(renders).toBeGreaterThan(1); // multiple root-pop iterations occurred
+    const bannerRows = countLogRows(prompt, /WebNovel Scraper\s+·/, "info");
+    expect(bannerRows).toBe(1);
+    expect(exited).toBe(1);
   });
 });

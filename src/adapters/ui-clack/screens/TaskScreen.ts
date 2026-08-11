@@ -33,6 +33,7 @@ import type {
 } from "../../../core/domain/JobConfig.js";
 import type { DomainCookie } from "../../../core/domain/Cookie.js";
 import type { ScrapeSession } from "../../../core/domain/Session.js";
+import type { SiteAdapter } from "../../../core/domain/SiteAdapter.js";
 import type { LiveTaskRegistry, ScrapeTask } from "../TaskRegistry.js";
 
 export interface TaskScreenParams {
@@ -45,6 +46,12 @@ export interface TaskScreenParams {
    * discovery; auto flow passes them from the probe context). Resume leaves
    * this undefined and TaskScreen resolves afresh - mirroring v1. */
   cookies?: DomainCookie[];
+  /** Optional site adapter (Pipeline Phase 1 / 4) so ScrapeService can wire
+   * `processChapterContent` + `collectFootnotes` into ChapterExtractor. The
+   * auto flow (AutoProbeScreen -> AutoCustomizeScreen -> TaskScreen)
+   * carries the matched adapter straight through; the manual flow leaves
+   * this unset and the generic `sanitize-html` path keeps running. */
+  siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">;
 }
 
 export class TaskScreen implements Screen {
@@ -80,6 +87,7 @@ export class TaskScreen implements Screen {
       epub,
       ui,
       log: ctx.log,
+      siteAdapter: sp.siteAdapter,
     });
 
     const total = sp.chapterUrls.length;
@@ -126,6 +134,7 @@ export class TaskScreen implements Screen {
         job,
         cookies,
         sp.resumeSession ? { session: sp.resumeSession } : undefined,
+        job.volumes,
       );
     } catch (e) {
       spin.fail(`Scrape failed: ${(e as Error).message}`);

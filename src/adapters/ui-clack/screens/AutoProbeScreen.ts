@@ -129,10 +129,36 @@ export class AutoProbeScreen implements Screen {
         throw e;
       }
 
+      // Pipeline Phase 4 (ADR-P7-B): the adapter's optional catalog-volume
+      // walk attaches to AutoScrapeResult. Webnovel is the first adapter to
+      // populate this; flat-catalog adapters leave it undefined. The page is
+      // still on the catalog from the previous step, so scrapeVolumes's
+      // internal `page.goto(toc)` is a no-op reload (D2 deviation: each
+      // adapter method calls the shared walkCatalogVolumes helper; the
+      // adapter page visits the catalog once per AutoProbeScreen invocation
+      // in terms of network - the catalog page is already loaded).
+      let volumes: AutoScrapeResult["volumes"];
+      if (adapter.scrapeVolumes) {
+        try {
+          volumes = await adapter.scrapeVolumes(page, entryUrl, {
+            waitUntil: appCfg.waitUntil,
+            navTimeoutMs: appCfg.navigationTimeoutMs,
+          });
+        } catch (e) {
+          // Volumes are additive-optional; a failure must not abort the
+          // probe - the EPUB falls back to its no-volumes path (flat list).
+          ctx.prompt.log(
+            "warn",
+            `Volume walk failed (proceeding without volume grouping): ${(e as Error).message}`,
+          );
+          volumes = undefined;
+        }
+      }
+
       await page.close().catch(() => {});
       await context.close().catch(() => {});
       await browser.close().catch(() => {});
-      auto = { siteId: adapter.id, novelUrl: entryUrl, metadata, chapterLinks };
+      auto = { siteId: adapter.id, novelUrl: entryUrl, metadata, chapterLinks, volumes };
     } catch (e) {
       ctx.prompt.log("error", `Auto-scrape failed: ${(e as Error).message}`);
       await ctx.prompt
@@ -166,7 +192,7 @@ export class AutoProbeScreen implements Screen {
       // Fast path: build quick JobConfig + the second confirm, then push
       // TaskScreen with the resolved cookies + chapterLinks (v1 :750-827).
       const job = buildQuickAutoConfig(appCfg, profile, adapter, auto);
-      return fastPathConfirmStart(ctx, job, auto, cookies, isNewDomain);
+      return fastPathConfirmStart(ctx, job, auto, cookies, isNewDomain, adapter);
     }
 
     // Customize path: chapter-list review FIRST (v1 :754-770), then the
@@ -186,6 +212,10 @@ export class AutoProbeScreen implements Screen {
           domain,
           isNewDomain,
         },
+        // Pipeline Phase 4: forward the scraped volumes so the review surface
+        // shows the per-volume line. No domain change - the volume map rides
+        // alongside the AutoScrapeResult in replaceParams anyway.
+        volumes: auto.volumes,
       },
     };
   }
@@ -198,6 +228,7 @@ async function fastPathConfirmStart(
   auto: AutoScrapeResult,
   cookies: DomainCookie[],
   isNewDomain: boolean,
+  adapter: SiteAdapter,
 ): Promise<ScreenResult> {
   ctx.prompt.log("info", fmt.section("Ready to Scrape"));
   ctx.prompt.log(
@@ -217,7 +248,13 @@ async function fastPathConfirmStart(
   return {
     action: "replace",
     screen: "task",
-    params: { job, chapterUrls: auto.chapterLinks, cookies, isNewDomain },
+    params: {
+      job,
+      chapterUrls: auto.chapterLinks,
+      cookies,
+      isNewDomain,
+      siteAdapter: adapter,
+    },
   };
 }
 
@@ -234,6 +271,12 @@ function renderScanSummary(
     `Detected "${auto.metadata.title}" by ${auto.metadata.author || "an unknown author"}`,
   );
   ctx.prompt.log("info", `Chapters found  : ${auto.chapterLinks.length}`);
+  if (auto.volumes && auto.volumes.length > 0) {
+    ctx.prompt.log(
+      "info",
+      `Volumes found    : ${auto.volumes.length}`,
+    );
+  }
   ctx.prompt.log("dim", `  first: ${auto.chapterLinks[0]}`);
   ctx.prompt.log(
     "dim",
@@ -295,6 +338,12 @@ function buildQuickAutoConfig(
     delayMax: profile?.delayMax ?? appCfg.defaultDelayMax,
     headless: appCfg.headless,
     output: { epub: true },
+    // Pipeline Phase 4 (ADR-P7-A/B): the adapter's scrapeVolumes walk
+    // populates `auto.volumes`; flow it onto JobConfig.volumes so it rides
+    // into ScrapeService.run and EpubWriter.write as the side-channel
+    // volume map. Absent for flat-catalog adapters (undefined ->
+    // EPUB falls back to its no-volumes path).
+    volumes: auto.volumes,
   };
 }
 

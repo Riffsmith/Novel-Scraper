@@ -310,13 +310,82 @@ async function scrapeVolumes(
   return volumes.length > 0 ? volumes : undefined;
 }
 
+// Footnote collector - browser-side single string async-IIFE doing the
+// reference's click-wait-collect loop (`_extractFootnotes`
+// contentExtractor.mjs:276-342) entirely in browser scope. PageHandle
+// exposes no generic element-handle `$$` / `click` surface, so the whole
+// loop must execute inside one evaluateScript string (per AGENTS.md
+// "page.evaluate() string-constant rule" and the plan §"Cross-cutting
+// instructions / String-evaluate rule"). Returns `Footnote[]`-shaped
+// `{ ref, title, content }` JSON; ChapterExtractor feeds that into
+// processChapterContent. No retry or backoff in here (ScrapeService owns
+// the retry pipeline; collectFootnotes failures fall through to a warn
+// and processChapterContent runs without footnotes).
+const FOOTNOTE_COLLECT_SCRIPT = `
+(async () => {
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+  const footnotes = [];
+  const annos = Array.from(document.querySelectorAll('anno[data-annotation-id]'));
+  for (const anno of annos) {
+    try {
+      const annotationId = anno.getAttribute('data-annotation-id');
+      if (!annotationId) continue;
+      const sup = anno.querySelector('sup');
+      if (!sup) continue;
+      sup.click();
+      await delay(500);
+      const popup = anno.querySelector('.anno-drop');
+      if (!popup) continue;
+      const titleEl = popup.querySelector('.anno-drop-hd');
+      const contentEl = popup.querySelector('.anno-drop-bd');
+      const title = titleEl ? (titleEl.textContent || '').trim() : '';
+      const content = contentEl ? (contentEl.textContent || '').trim() : '';
+      if (title || content) {
+        footnotes.push({ ref: annotationId, title, content });
+      }
+      const parentP = anno.closest('p');
+      if (parentP) {
+        parentP.click();
+        await delay(200);
+      }
+    } catch (e) {
+      // Continue to the next annotation rather than aborting the whole
+      // loop - matches the reference's continue-on-error guard.
+    }
+  }
+  return footnotes;
+})()
+`;
+
+// ── Pipeline Phase 1: collectFootnotes (D5 deviation) ─────────────────────
+// Live-page click-wait-collect loop. Runs at ChapterExtractor time (after
+// challenge wait-out + content selector pull and before the
+// processChapterContent post-hook) because clicking the `<sup>` to trigger
+// `.anno-drop` requires a LIVE page (the post-hook is a pure cheerio path
+// over already-extracted HTML). Per the plan §"Adapter Phase 5 step 8" +
+// §"Pipeline Phase 1", this method was deliberately deferred to Pipeline
+// Phase 1 by Scaffold Phase 3, NOT added by Adapter Phase 5.
+//
+// The whole click-wait-collect loop runs inside one `evaluateScript`
+// string async-IIFE (FOOTNOTE_COLLECT_SCRIPT) because PageHandle exposes
+// no generic `$$` / `click` element-handle surface - only
+// `evaluateScript(string)` (AGENTS.md "page.evaluate() string-constant
+// rule"). Returns `Footnote[]` (possibly empty); ChapterExtractor feeds
+// that array into processChapterContent's `footnotes` input.
+async function collectFootnotes(page: PageHandle): Promise<Footnote[] | undefined> {
+  const out = await page
+    .evaluateScript<Footnote[]>(FOOTNOTE_COLLECT_SCRIPT)
+    .catch(() => [] as Footnote[]);
+  return out && out.length > 0 ? out : undefined;
+}
+
 // ── Adapter Phase 5: processChapterContent (D3 deviation: skip reference's
 //    text-node re-escape; v2's toXhtml() already handles ampersands) ──────────
 // Port of reference/webnovel/contentExtractor.mjs:351-470. The reference's
 // re-escape pass (contentProcessor.mjs:42-82) is intentionally NOT ported:
 // v2's templates.ts:39-50 toXhtml() already escapes bare ampersands and
 // self-closes void tags, so re-applying the reference's escape here would
-// double-encode (& -> & -> &amp;). Documented in deviation-log D3.
+// double-encode (& -> & -> &). Documented in deviation-log D3.
 function processChapterContent(input: {
   rawHtml: string;
   title: string;
@@ -423,6 +492,7 @@ export function makeWebnovelAdapter(log: Logger): SiteAdapter {
     scrapeChapterLinks: (page, url, opts) => scrapeChapterLinks(page, url, opts, log),
     scrapeVolumes: (page, url, opts) => scrapeVolumes(page, url, opts, log),
     processChapterContent,
+    collectFootnotes,
     defaultContentSelector: "div.cha-words",
     defaultTitleSelector:
       "h1.dib.mb0.fw700.fs24.lh1\\.5, h1.chapter-title, .j_chapterName",

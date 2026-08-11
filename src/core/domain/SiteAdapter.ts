@@ -108,6 +108,26 @@ export interface SiteAdapter {
     footnotes?: Footnote[];
   }): { htmlContent: string; footnotes?: Footnote[] };
 
+  /**
+   * Optional live-page footnote collector (Pipeline Phase 1, D5
+   * deviation). Runs at chapter-extraction time, AFTER challenge wait-out
+   * + content-selector pull AND BEFORE `processChapterContent`. The
+   * returned `Footnote[]` feeds into `processChapterContent`'s `footnotes`
+   * input so the hook can emit the footnotes HTML section with back-links.
+   *
+   * Lives in its own method (not in `processChapterContent`) because the
+   * reference's `_extractFootnotes` click-wait-collect loop requires live-
+   * page interaction (`<sup>` click -> `.anno-drop` popup -> read
+   * `.anno-drop-hd` + `.anno-drop-bd`), and `processChapterContent` is a
+   * pure post-hook over already-extracted HTML. The
+   * `PageHandle.evaluateScript` port (string-constant script) carries the
+   * click-wait-collect loop browser-side as a single async-IIFE.
+   *
+   * Adapters that don't define this method leave the `footnotes` arg
+   * `undefined` when `processChapterContent` is invoked.
+   */
+  collectFootnotes?(page: PageHandle): Promise<Footnote[] | undefined>;
+
   // ── Defaults pre-filled into the auto-scrape review screen ─────────────
   // (the user can always override these before the scrape starts)
   defaultContentSelector: string;

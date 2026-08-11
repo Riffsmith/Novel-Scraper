@@ -25,6 +25,7 @@ import type { Logger } from "../../ports/Logger.js";
 
 import type { PromptProvider } from "./PromptProvider.js";
 import type { Screen, ShellContext, ScreenResult, TaskRegistry } from "./ShellContext.js";
+import * as fmt from "./format.js";
 
 export interface ShellDeps {
   config: ConfigStore;
@@ -79,6 +80,12 @@ export class Shell {
   async run(startScreen: string, params?: unknown): Promise<void> {
     this.stack.push({ screen: startScreen, params });
     this.installQuitListener();
+
+    // Header strip: print the app banner ONCE per Shell.run() session
+    // (03-tui-design §4 header / footer / log regions; ADR-P3-FIX-TUI).
+    // Individual screens - including MainScreen - never re-emit the banner.
+    // Re-emitting on every visit was the dominant source of TUI log noise.
+    this.deps.prompt.log("info", fmt.banner());
 
     while (!this.quitRequested && this.stack.length > 0) {
       const frame = this.stack[this.stack.length - 1];

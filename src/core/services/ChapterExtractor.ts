@@ -10,6 +10,8 @@ import sanitizeHtml from "sanitize-html";
 import type { Chapter } from "../domain/Chapter.js";
 import type { PageHandle } from "../../ports/BrowserPort.js";
 import type { Logger } from "../../ports/Logger.js";
+import type { SiteAdapter } from "../domain/SiteAdapter.js";
+import type { Footnote } from "../domain/Footnote.js";
 import { SecurityChallengeError } from "../errors.js";
 import { isXPath } from "./SelectorService.js";
 
@@ -93,7 +95,17 @@ export interface ChapterScrapeOpts {
 }
 
 export class ChapterExtractor {
-  constructor(private log: Logger) {}
+  // Optional site-adapter hooks (ADR-P7-D + D5 deviation). When present,
+  // `processChapterContent` runs after the generic extraction and replaces
+  // the `sanitize-html` allow-list path (the adapter applies its own
+  // allow-list via the reference's blacklist). `collectFootnotes` runs
+  // first to feed footnote data into the post-hook. Both are set by
+  // ScrapeService from the resolved adapter; absent for site adapters that
+  // don't define them (the generic `sanitize-html` path keeps running).
+  constructor(
+    private log: Logger,
+    private siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">,
+  ) {}
 
   async detectChallenge(page: PageHandle): Promise<ChallengeCheckResult> {
     // 1) Structural DOM markers
@@ -194,18 +206,44 @@ export class ChapterExtractor {
         .remove();
       root.find('[aria-hidden="true"]').remove();
 
-      let clean = sanitizeHtml(root.html() ?? "", SANITIZE_OPTS);
+      // Page <title> fallback if the selector missed. Resolved here (before
+      // the adapter hook) so the post-hook receives the final title.
+      if (title === `Chapter ${index}`) {
+        const pageTitleRaw = await page.title().catch(() => "");
+        if (pageTitleRaw) title = pageTitleRaw;
+      }
+
+      let clean: string;
+      if (this.siteAdapter?.processChapterContent) {
+        // ADR-P7-D adapter post-hook path. The adapter's hook BYPASSES
+        // sanitizeHtml (it applies its own allow-list via the reference's
+        // blacklist). collectFootnotes (D5 deviation) runs first to feed
+        // footnote data into the hook so it can emit the footnotes section
+        // with back-links.
+        let footnotes: Footnote[] | undefined;
+        if (this.siteAdapter.collectFootnotes) {
+          try {
+            footnotes = await this.siteAdapter.collectFootnotes(page);
+          } catch (e) {
+            this.log.warn(
+              `collectFootnotes failed at ${url}: ${(e as Error).message} - proceeding without footnotes`,
+            );
+          }
+        }
+        const result = this.siteAdapter.processChapterContent({
+          rawHtml: root.html() ?? "",
+          title,
+          footnotes,
+        });
+        clean = result.htmlContent;
+      } else {
+        clean = sanitizeHtml(root.html() ?? "", SANITIZE_OPTS);
+      }
       clean = clean
         .replace(/<p[^>]*>\s*<\/p>/gi, "")
         .replace(/(<br\s*\/?>\s*){3,}/gi, "<br/><br/>")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
-
-      // Page <title> fallback
-      if (title === `Chapter ${index}`) {
-        const pageTitleRaw = await page.title().catch(() => "");
-        if (pageTitleRaw) title = pageTitleRaw;
-      }
 
       const wordCount = cheerio
         .load(clean)

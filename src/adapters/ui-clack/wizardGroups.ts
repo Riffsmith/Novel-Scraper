@@ -26,6 +26,7 @@ import {
   validateNonEmpty,
   validatePerfRange,
   validateUrl,
+  normalizeUrl,
 } from "./validation.js";
 import type { NextLocator } from "../../core/domain/Locator.js";
 import type { CoverSource, NovelMetadata } from "../../core/domain/NovelMetadata.js";
@@ -112,7 +113,7 @@ export async function sourceGroup(
       validate: validateUrl,
     });
     if (r === Cancel) return Cancel;
-    tocUrl = r.trim();
+    tocUrl = normalizeUrl(r);
   } else {
     const r1 = await prompt.text({
       message: "URL of the FIRST chapter:",
@@ -120,7 +121,7 @@ export async function sourceGroup(
       validate: validateUrl,
     });
     if (r1 === Cancel) return Cancel;
-    firstChapterUrl = r1.trim();
+    firstChapterUrl = normalizeUrl(r1);
 
     const r2 = await prompt.text({
       message: "URL of the LAST chapter:",
@@ -128,7 +129,7 @@ export async function sourceGroup(
       validate: validateUrl,
     });
     if (r2 === Cancel) return Cancel;
-    lastChapterUrl = r2.trim();
+    lastChapterUrl = normalizeUrl(r2);
 
     // Locator capture is handled by the manual screen via wizardShared.promptLocator,
     // because the locus differs between manual (profile locators) and auto flow.
@@ -330,7 +331,7 @@ export async function metadataGroup(
       validate: validateUrl,
     });
     if (r === Cancel) return Cancel;
-    coverUrl = r.trim();
+    coverUrl = normalizeUrl(r);
   }
   let coverPath: string | undefined;
   if (coverSource === "file") {

@@ -252,7 +252,20 @@ Replaces the generic `sanitize-html` allow-list path for webnovel chapters. Fait
 
 The reference's `contentProcessor.mjs:42-82` text-node re-escape pass is deliberately **NOT** ported (D3 deviation): v2's `toXhtml()` in `templates.ts:39-50` already escapes bare ampersands and self-closes void tags; re-applying the reference's escape would double-encode `&` to `&` + `amp;`.
 
-Footnote **collection** (`_extractFootnotes` in `reference/webnovel/contentExtractor.mjs:276-342` - clicking `<sup>` to trigger `.anno-drop` popup, collecting `.anno-drop-hd` + `.anno-drop-bd`) requires live-page interaction and lives outside `processChapterContent`. The plan parks it in a `collectFootnotes?(page): Promise<Footnote[] | undefined>` adapter method to add during Pipeline Phase 1 (deviation-log D5); it is **NOT** added by the Adapter / Epub phases.
+### 3.7.1 Footnote collection (`collectFootnotes`, D5 deviation - landed in Pipeline Phase 1)
+
+Footnote **collection** (`_extractFootnotes` in `reference/webnovel/contentExtractor.mjs:276-342` - clicking `<sup>` to trigger `.anno-drop` popup, collecting `.anno-drop-hd` + `.anno-drop-bd`) requires live-page interaction and lives outside `processChapterContent`. The adapter exposes a `collectFootnotes?(page): Promise<Footnote[] | undefined>` method that runs at chapter-extraction time inside `ChapterExtractor.extract()` (after challenge wait-out + content-selector pull and before the `processChapterContent` post-hook).
+
+The click-wait-collect loop runs entirely inside a STRING async-IIFE shipped to the browser via `PageHandle.evaluateScript` (`FOOTNOTE_COLLECT_SCRIPT` in `WebnovelAdapter.ts`). `PageHandle` exposes no generic `$$` / `click` element-handle surface - only `evaluateScript(string)`. Per AGENTS.md §"page.evaluate() string-constant rule" the script is a module-scope plain string constant with no named inner closures (the keepNames `__name` helper injected by tsx would otherwise ReferenceError in browser scope). The script:
+- iterates `anno[data-annotation-id]`, clicks each `<sup>` to trigger `.anno-drop`,
+- waits 500ms for the popup (reference's `TIMEOUTS.FOOTNOTE_CLICK` from `constants.mjs:63`),
+- reads `.anno-drop-hd` (title) + `.anno-drop-bd` (content),
+- closes the popup by clicking the parent `<p>`,
+- returns `Footnote[]` (possibly empty).
+
+Per-spot fail-soft: a `collectFootnotes` exception is logged as a `warn` ChapterExtractor-side and the chapter proceeds without footnotes (the post-hook still runs with `footnotes ?? undefined`). Chapter-extraction retry/backoff is **not** re-run for footnote failures - that pipeline is owned by `ScrapeService` for full-chapter failures (timeout / SecurityChallengeError), and incremental footnote misses are non-load-bearing per chapter (the chapter body still extracts fine).
+
+The single live-binary acceptance test (`tests/acceptance.test.ts` extension, gated on `CLOAKBROWSER_BINARY_AVAILABLE=1`) covers the live `collectFootnotes` path against a static chapter fixture once a real browser is available; the pure-DOM-shape surface is unit-tested with the FakeBrowserPort above.
 
 ### 3.8 Extraction defaults
 
@@ -275,13 +288,25 @@ Webnovel uses `PageHandle.evaluateScript` for:
 - `AUTHOR_SCRIPT` - author extraction via `address div.ell span` (reference `:52-56`).
 - `CATALOG_WALK_SCRIPT` - the volume walk, returns `[{ index, name, hrefs }]` per `div.volume-item`.
 - `makeAltChapterScript(selector)` - alternative-selector fallback (one per selector in `ALTERNATIVE_CHAPTER_SELECTORS`).
-- Future `FOOTNOTE_COLLECT_SCRIPT` (Pipeline Phase 1).
+- `FOOTNOTE_COLLECT_SCRIPT` - Pipeline Phase 1 (D5 deviation): a single async-IIFE that runs the click-wait-collect loop browser-side and returns `Footnote[]`-shaped JSON to `ChapterExtractor`, which feeds it into `processChapterContent`'s `footnotes` input.
 
 Every script is a plain string constant defined at module scope; never a closure (the keepNames `__name` helper absent from browser scope - AGENTS.md "page.evaluate() string-constant rule").
 
-### 3.10 Verification status
+### 3.10 Pipeline integration (Pipeline Phase 1 + 2 + 4)
 
-Verified against the live site during implementation: selectors still resolve on `webnovel.com` for title / author / catalog / volume-item-h4 paths. The locked-chapter `<svg>` exclusion holds.
+The full Adapter -> Pipeline wire:
+
+- `ChapterExtractor.extract()` (`src/core/services/ChapterExtractor.ts`) gains an optional `siteAdapter?` constructor arg (set by `ScrapeService` from its own `deps.siteAdapter`). When the adapter provides `collectFootnotes` / `processChapterContent`, the extractor runs them between the generic extraction (challenge wait-out + content-selector pull + exclude strip + cheerio post-process) and the EPUB writer's `toXhtml()` post-process - exactly the order ADR-P7-D specifies. The adapter's `htmlContent` BYPASSES `sanitize-html`. When the adapter hook is unset, the existing `sanitizeHtml` path runs byte-identical.
+- `ScrapeService` (`src/core/services/ScrapeService.ts`) gains an optional `deps.siteAdapter` so its `ChapterExtractor` constructor-call receives the adapter. `ScrapeService.run` also gains a trailing-optional `volumes?` parameter (ADR-P7-A) forwarded to `EpubWriter.write`; on resume, `session.volumes` (if set) overrides the caller arg (resume checkpoint is the source of truth).
+- `AutoProbeScreen` calls `adapter.scrapeVolumes?` (when present) after `scrapeChapterLinks` and sets `AutoScrapeResult.volumes`. `buildQuickAutoConfig` + `assembleAutoJob` flow that onto `JobConfig.volumes`, and the screen push to TaskScreen passes the resolved `siteAdapter` so ScrapeService can wire `collectFootnotes` + `processChapterContent` into ChapterExtractor.
+- `ChapterListScreen` accepts an optional `volumes?: AutoNovelVolume[]` param (Pipeline Phase 4 minor frontend addition) and renders a per-volume line above the flat chapter list. No domain change.
+- `runJob.ts` forwards `job.volumes` to `ScrapeService.run` so the CLI / YAML flow reuses the same seam (relevant when a future YAML job file embeds a volume map).
+
+The flat-catalog adapters (wtr-lab, novelfire) leave `scrapeVolumes`, `processChapterContent`, and `collectFootnotes` unset; their EPUB output is byte-identical to today (regression-guarded by `tests/epub-archiver.test.ts` "no-volumes output stays byte-identical" + `tests/chapter-extractor.test.ts` and `tests/scrape-service.test.ts` unchanged behaviour for adapter-less flows).
+
+### 3.11 Verification status
+
+Verified against the live site during implementation: selectors still resolve on `webnovel.com` for title / author / catalog / volume-item-h4 paths. The locked-chapter `<svg>` exclusion holds. Pipeline Phase 1 / 2 / 4 wired the full Adapter -> ChapterExtractor -> ScrapeService -> EpubWriter flow; the live-binary acceptance test (`tests/acceptance.test.ts` gated on `CLOAKBROWSER_BINARY_AVAILABLE=1`) covers the live `scrapeMetadata` / `scrapeChapterLinks` / `scrapeVolumes` / `collectFootnotes` paths once a real browser context is available.
 
 ---
 

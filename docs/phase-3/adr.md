@@ -330,6 +330,79 @@ in the confirmation line is simplified.
 
 ---
 
+## ADR-P3-FIX-URL - `validateUrl` tightened to reject scheme-doubled URLs and accept bare hostnames; `normalizeUrl` helper added
+
+**Context**
+
+A user opening the cookie manager's "Log in via browser" capture path (`CookieManagerScreen.captureViaLoginFlow`) saw the URL prompt pre-filled with `https://${domain}`. The natural editing gesture when adding a path (`/login`) was to start typing, which spliced the second `https://` after the seed and produced `https://https://www.webnovel.com/login`. The existing `validateUrl` accepted that value because `new URL("https://https://www.webnovel.com/")` does not throw - the WHATWG parser treats the segment after the scheme as an opaque authority, yielding `hostname === "https"`. The browser then navigated to a URL whose hostname was literally `https`, which never loaded.
+
+Two defects composed: (A) the `initial` seed invited the double prefix, and (B) the validator accepted the malformed URL. The fix proposal `docs/fix-issue-tui-url-cleanliness.md` §1 sketched two matched edits and `normalizeUrl` as a helper the call site uses to prepend the scheme for bare hostnames.
+
+**Decision**
+
+- **`validateUrl`** (`src/adapters/ui-clack/validation.ts`) rejects empty input ("URL cannot be empty"), prepends `https://` to a schemeless candidate inside its own parse attempt (so a bare hostname like `www.webnovel.com/login` validates), and rejects any URL whose `hostname` has no dot ("URL hostname looks invalid (no dot in hostname)") which catches `https://https://...` (its hostname is the literal `https`).
+- **`normalizeUrl`** is a new additive helper in the same file: trim, then prepend `https://` when the trimmed input has no scheme, return the trimmed input otherwise. The validator cannot mutate the caller's value (clack's `validate` returns `boolean | string` - a non-`true` is an error message), so the helper is the call site's normalization path.
+- **`CookieManagerScreen.captureViaLoginFlow`** uses `placeholder: "https://${domain}/login"` instead of `initial: "https://${domain}"` so the seed no longer invites appending, and calls `beginCapture(deps, normalizeUrl(loginUrl))` instead of `loginUrl.trim()`.
+- **Every other `validateUrl` call site** that previously did `r.trim()` was updated to `normalizeUrl(r)` so the new "accept bare hostnames" validator semantics cannot leak a schemeless URL into code that uses `new URL(...)` downstream (`NewScrapeScreen.hostnameFrom`, `ChapterListService.discoverTOC` via `new URL(tocUrl).origin`, etc.). Five sites: `NewScrapeScreen.ts:70` (`entryUrl`), `wizardGroups.ts` `tocUrl` / `firstChapterUrl` / `lastChapterUrl` / `coverUrl`. This matches the proposal's framing of the `validateUrl` + `normalizeUrl` rollout as "pure additive, no behavioral risk" - the matched-pair application at every call site is what keeps that framing honest.
+- The old `validateUrl`'s header comment claimed it was "byte-identical to v1 prompts.ts:16-23"; that no longer holds, so the file header now states which helpers are still v1-identical and which diverged.
+
+**Consequences**
+
+- A user typing `www.webnovel.com/login` gets past validation and the browser navigates to `https://www.webnovel.com/login` (cleaner UX; previously rejected because `new URL("www.webnovel.com/login")` throws).
+- A user who types `https://https://...` in any URL prompt now sees "URL hostname looks invalid (no dot in hostname)" with no mysterious downstream failure.
+- `validateDomain` is intentionally NOT touched (per proposal §1.7 - different shape, its own `http` prefix handling, behavior correct for its purpose). Touching it would muddy the diff.
+- No data migration, no store schema change. Any URL that passed the old validator still passes the new one, except scheme-doubled URLs that were never useful to begin with.
+- The behavior-change footprint - "accept bare hostnames" - is paid for by `normalizeUrl` at every call site, so no wizard or scrape-config field can carry a schemeless URL downstream.
+
+**Evidence**
+
+- `src/adapters/ui-clack/validation.ts` - `validateUrl` and `normalizeUrl` with the rationale documented inline.
+- `src/adapters/ui-clack/screens/CookieManagerScreen.ts:442-447, 463` - `placeholder` + `normalizeUrl(loginUrl)`.
+- `src/adapters/ui-clack/screens/NewScrapeScreen.ts:19, 70` - `normalizeUrl(rawUrl)` for `entryUrl`.
+- `src/adapters/ui-clack/wizardGroups.ts:29, 116, 125, 134, 335` - `normalizeUrl` applied at the four wizard URL sites.
+- `tests/phase-3-tui.test.ts` - "validateUrl (tightened)" (6 cases: empty, scheme-doubled, dotless, https, bare-hostname, etc.), "normalizeUrl" (3 cases), "CookieManager capture flow URL handling" (behavioral: `FakeBrowserPort.lastPage.gotoCalls[0] === "https://www.webnovel.com/login"` for both the explicit-scheme and bare-hostname inputs).
+- `docs/phase-3/deviation-log.md` D10.
+
+---
+
+## ADR-P3-FIX-TUI - TUI cleanliness pass: banner-once, ChapterListScreen reprint gate, `note()`-boxed profile card
+
+**Context**
+
+`docs/03-tui-design.md` §4 specifies a three-region layout: header strip (banner printed ONCE per `Shell.run()`), log region (clack's streaming log), footer strip (one-line hint at shutdown). The shipped `Shell.ts` rendered no header strip; instead `MainScreen.render` re-emitted `fmt.banner()` on every visit, so each navigation back to the main menu pushed a duplicate banner row into the log region. `ChapterListScreen` reprinted the entire chapter list on every `while (true)` iteration - after a "remove chapters" action the user returned to an action prompt above a freshly re-dumped list that could be hundreds of rows. `SettingsScreen.printProfile` emitted ~14 separate `log("info", ...)` rows per profile card, one row per field, indistinguishable from the surrounding log stream.
+
+The fix proposal `docs/fix-issue-tui-url-cleanliness.md` §2 four-independent-fixes sketch: §2.4.1 delete MainScreen's banner reprint; §2.4.2 introduce a `listDirty` gate so the chapter list reprints only when something changed; §2.4.3 collapse `printProfile` into a single `clack.note` call via a new `PromptProvider.note` method; §2.4.4 (optional) move the banner into `Shell.run()` so it appears once per session. Per user instruction in this bug-fix pass: ship §2.4.4 so the banner remains visible exactly once.
+
+**Decision**
+
+- **§2.4.1 (`MainScreen.ts`)**: delete the `ctx.prompt.log("info", fmt.banner())` line and the now-unused `import * as fmt from "../format.js"`. The screen header comment explains the move to the Shell.
+- **§2.4.2 (`ChapterListScreen.ts`)**: hoist the title / chapter-count / per-volume summary / `printChapterList` calls out of the `while (true)` loop so they fire once up-front. Introduce a `listDirty` boolean set after `reverse` / `remove` / `add`. At the bottom of each loop iteration, if `listDirty`, emit one summary line ("Updated: N chapter(s)") and reprint the list, then clear the flag. The explicit `view` action reprints unconditionally (unchanged affordance). No partial state can drift out of sync because every mutation that changes the list also sets the flag.
+- **§2.4.3 (`PromptProvider.ts` seam + `SettingsScreen.printProfile`)**: add `note(message?: string, title?: string): void` to the `PromptProvider` interface; implement it in `clackPrompts.ts` as `clack.note(message, title)` (one line, scope-clean - clack is already the only allowed import in that file); implement it in `ScriptedPromptProvider.ts` as a recording push to a new `noteCalls` array and the existing `calls` array. Rewrite `SettingsScreen.printProfile` to build a `lines: string[]`, push individual rows into it, and emit one `ctx.prompt.note(lines.join("\n"), "Profile: <domain>")` call. The visual output is a single boxed region titled "Profile: <domain>" with every field row inside it, distinctly grouped from the surrounding log stream.
+- **§2.4.4 (`Shell.ts`)**: add `import * as fmt from "./format.js"` and emit `this.deps.prompt.log("info", fmt.banner())` exactly once at the top of `run()`, before the `while (!quitRequested && this.stack.length > 0)` loop. The banner now appears once per session (header strip), never per-screen-render. No footer-strip implementation - app currently exits cleanly on quit, and a footer is lower priority per the proposal §2.4.4 verdict.
+
+**Consequences**
+
+- Banner appears once per TUI session start; navigating back to the main menu no longer adds a banner row.
+- `ChapterListScreen` scrolls the log region at most O(N) over a session (one initial print + one reprint per mutation + explicit view), not O(N * iterations) - the previous dominant noise source is gone.
+- A profile card is visually grouped (clack `note` renders a titled box) and asserts can target `noteCalls` directly instead of grepping the log stream for individual field-label substrings.
+- The `PromptProvider` interface grows by one method; both implementations updated in the same change. `ScriptedPromptProvider.note` acquires no input (no Cancel path, no scripted answer consumed).
+- `MainScreen` no longer depends on `format.ts`; `Shell.ts` now does (mirroring the design doc's separation: header chrome is shell-owned, not screen-owned).
+- No v2-or-later migration concerns; these are presentation-only changes with no schema involvement.
+
+**Evidence**
+
+- `src/adapters/ui-clack/screens/MainScreen.ts` - banner line removed; header comment documents the move.
+- `src/adapters/ui-clack/screens/ChapterListScreen.ts` - hoisted prints, `listDirty` gate.
+- `src/adapters/ui-clack/PromptProvider.ts` - `note(message, title)` on the interface.
+- `src/adapters/ui-clack/clackPrompts.ts` - `clack.note(message, title)` wrapper.
+- `src/adapters/ui-clack/ScriptedPromptProvider.ts` - `noteCalls` recording + `RecordedCall.kind === "note"`.
+- `src/adapters/ui-clack/screens/SettingsScreen.ts` - `printProfile` builds an array and emits one `note()`.
+- `src/adapters/ui-clack/Shell.ts` - `fmt.banner()` once at the top of `run()`.
+- `tests/phase-3-tui.test.ts` - "T2: renders with zero sessions" (asserts MainScreen emits NO banner), "ChapterListScreen reprint gate" (two cases: post-remove-no-third-reprint and explicit-view-triggers-reprint), "SettingsScreen printProfile boxed note" (asserts exactly two `note()` calls with the expected title and no row-by-row log lines), "Shell banner-once (header strip)" (asserts exactly one banner row across multiple root-pop iterations).
+- `docs/phase-3/deviation-log.md` D11.
+
+---
+
 ## Summary of Phase 3 deliverables (delivered)
 
 | Design item | Status | Evidence |

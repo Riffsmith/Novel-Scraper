@@ -63,5 +63,12 @@ export async function runJob(
     log,
   });
 
-  return scrapeService.run(job, cookies, resume);
+  // Pipeline Phase 3: forward job.volumes to ScrapeService.run so the auto
+  // flow's AutoScrapeResult.volumes flows through to EpubWriter at build time.
+  // On resume, ScrapeService.run resolves session.volumes (if set) and
+  // overrides the caller arg - the session checkpoint is the resume source
+  // of truth. When job.volumes is undefined (manual flow / YAML job files /
+  // flat-catalog adapters wtr-lab + novelfire), ScrapeService.run passes
+  // undefined -> EpubWriter's no-volumes path runs byte-identical to today.
+  return scrapeService.run(job, cookies, resume, job.volumes);
 }

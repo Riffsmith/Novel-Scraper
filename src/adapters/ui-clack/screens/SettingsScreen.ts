@@ -431,8 +431,12 @@ export class SettingsScreen implements Screen {
   }
 
   private printProfile(ctx: ShellContext, p: SiteProfile): void {
-    ctx.prompt.log("info", "");
-    const row = (k: string, v: string) => ctx.prompt.log("info", `${k.padEnd(22)} ${v}`);
+    // Render the whole profile card as a single boxed `note` region so each
+    // field is visually grouped (ADR-P3-FIX-TUI / fix-issue-tui-url-cleanliness
+    // §2.4.3). Previously this emitted ~14 separate `log("info", ...)` rows,
+    // indistinguishable from the surrounding log stream.
+    const lines: string[] = [];
+    const row = (k: string, v: string) => lines.push(`${k.padEnd(22)} ${v}`);
     row("Domain", p.domain);
     if (p.label) row("Label", p.label);
     row("Method", p.method);
@@ -450,5 +454,6 @@ export class SettingsScreen implements Screen {
     if (p.notes) row("Notes", p.notes);
     row("Saved", p.savedAt.slice(0, 10));
     row("Updated", p.updatedAt.slice(0, 10));
+    ctx.prompt.note(lines.join("\n"), `Profile: ${p.domain}`);
   }
 }

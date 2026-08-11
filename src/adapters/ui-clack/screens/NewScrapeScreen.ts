@@ -16,7 +16,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { Cancel } from "../PromptProvider.js";
-import { validateUrl } from "../validation.js";
+import { validateUrl, normalizeUrl } from "../validation.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
 import type { ScrapeSession } from "../../../core/domain/Session.js";
 import type { SiteProfile } from "../../../ports/ProfileStore.js";
@@ -67,7 +67,7 @@ export class NewScrapeScreen implements Screen {
     });
     if (rawUrl === Cancel) return { action: "pop" };
 
-    const entryUrl = rawUrl.trim();
+    const entryUrl = normalizeUrl(rawUrl);
     const domain = hostnameFrom(entryUrl);
     const profile = domain ? await ctx.profiles.load(domain) : null;
     const isNewDomain = domain ? !profile : false;

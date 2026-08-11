@@ -184,3 +184,31 @@ than byte-identical golden files because there is no fixed terminal in CI; width
 **Consequence (confirmed):** `pnpm test` stays green in any environment (the acceptance suite remains
 gated on `CLOAKBROWSER_BINARY_AVAILABLE=1`); the suite doubles as a living map of every screen's
 decision points.
+
+---
+
+## D10 - `validateUrl` no longer byte-identical to v1; tightened against scheme-doubled URLs, accepts bare hostnames (new `normalizeUrl` helper)
+
+**Spec:** phase-3 readme §1.1 / file header comment stated `validateUrl` was "byte-identical to v1 prompts.ts:16-23", accepting any string that did not throw under `new URL(...)`.
+
+**Deviation:** `validateUrl` (in `src/adapters/ui-clack/validation.ts`) now (a) rejects empty input with a clear message, (b) internally prepends `https://` to a schemeless candidate so a bare hostname like `www.webnovel.com/login` validates, (c) rejects any URL whose parsed `hostname` has no dot (catches `https://https://...` whose hostname is the literal `https`). A new additive `normalizeUrl(val)` helper trims and prepends `https://` for schemeless input; the call site uses it to produce the validated URL. Applied at every existing `validateUrl` call site: `CookieManagerScreen.captureViaLoginFlow` (which also switched the prompt's `initial` -> `placeholder`), `NewScrapeScreen.render` (`entryUrl`), and `wizardGroups.ts` `tocUrl` / `firstChapterUrl` / `lastChapterUrl` / `coverUrl`.
+
+**Reason:** The bug in `docs/fix-issue-tui-url-cleanliness.md` §1 was that the old validator accepted `https://https://www.webnovel.com/` because WHATWG's URL parser treats the post-scheme segment as an opaque authority, yielding `hostname === "https"`. The browser then navigated to an unreachable host with no clear cause. The doc's "accept bare hostnames" normalization was pursued as a paired change with `normalizeUrl` at every call site - the alternative "only reject scheme-doubled URLs and empty" would have left the existing schemeless-rejection behavior but the user reported the double-prefix bug specifically from a context where the seed invited it; the doc design explicitly approved the matched pair.
+
+**Consequence (confirmed):** Any URL that passed the old validator still passes the new one except scheme-doubled URLs (which were never useful to begin with) and schemeless values (which under the old validator were rejected). Bare-hostname input now advances downstream, normalized via `normalizeUrl`, so the four `new URL(...)` consumers (`NewScrapeScreen.hostnameFrom`, `ChapterListService.discoverTOC`, etc.) never see a schemeless URL. `validateDomain` is deliberately untouched (proposal §1.7). No data migration, no deployment risk. ADR-P3-FIX-URL.
+
+---
+
+## D11 - TUI cleanliness pass: MainScreen drops per-render banner, ChapterListScreen gates reprints, `SettingsScreen.printProfile` collapses into one `note()` call, `Shell.run()` emits the banner once
+
+**Spec:** `docs/03-tui-design.md` §4 specified a 3-region TUI layout (header strip printed once per session, log region, footer strip). Shipped `Shell.ts` renders no header strip; `MainScreen.render` re-emitted `fmt.banner()` on every visit (single-screen noise), `ChapterListScreen` reprinted the full chapter list on every loop iteration (quadratic noise), `SettingsScreen.printProfile` emitted ~14 separate `log("info")` rows per profile card (no visual grouping).
+
+**Deviation (per `docs/fix-issue-tui-url-cleanliness.md` §2):**
+- **§2.4.1:** `MainScreen.ts` deletes its `ctx.prompt.log("info", fmt.banner())` line and the now-unused `fmt` import; the banner is no longer re-emitted per render.
+- **§2.4.2:** `ChapterListScreen.ts` hoists the title / chapter-count / per-volume summary / `printChapterList` calls out of the `while (true)` loop so they fire once before it. A new `listDirty` flag is set after `reverse` / `remove` / `add`; at the bottom of each iteration, if the flag is set, the screen reprints the list once and clears the flag. The explicit `view` affordance is unchanged (still reprints unconditionally).
+- **§2.4.3:** A new `note(message?: string, title?: string): void` method is added to the `PromptProvider` interface (the typed seam), implemented in `clackPrompts.ts` as `clack.note(message, title)` and in `ScriptedPromptProvider.ts` as a recording push to a new `noteCalls` array. `SettingsScreen.printProfile` now builds a string array and calls `ctx.prompt.note(lines.join("\n"), "Profile: <domain>")` once, instead of ~14 `log("info", ...)` rows.
+- **§2.4.4:** `Shell.ts` adds `import * as fmt from "./format.js"` and emits `this.deps.prompt.log("info", fmt.banner())` exactly once at the start of `run()`, before the `while` loop. Per user instruction in the bug-fix pass, the banner remains visible exactly once per session start (proposal §2.4.4's "shell-header-strip" branch).
+
+**Reason:** The Phase 3 design's 3-region layout was never wired in, leaving the screens to compensate by re-emitting their headers per render - the dominant source of TUI log noise. The proposal ships a four-part matched set so the user-visible affordances stay the same (banner still appears; chapter list still reprints after any mutation; profile card still shows all fields), only the redundant re-emission is gone.
+
+**Consequence (confirmed):** Banner rows: O(per-visit) -> O(1 per session). `ChapterListScreen` log rows: O(N * loop-iterations) -> O(N + mutations) per session. Profile card: 14 separate log rows -> 1 `note()` call that renders a titled box. The T2 phase-3 test was flipped to assert MainScreen emits NO banner log row; new tests cover the reprint gate, the single-`note` profile card, and the Shell banner-once invariant. `MainScreen` no longer imports `format.ts`; `Shell.ts` now does, matching the design doc's separation of header chrome (shell) from screen content. ADR-P3-FIX-TUI.

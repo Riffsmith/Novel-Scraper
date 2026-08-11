@@ -6,9 +6,8 @@ the reason and the consequence. Anything not listed here was implemented as spec
 
 For chronological divergence in named phases other than `Scaffold`, the next
 implementor adds entries as they arise. D1-D5 below were seeded from the plan
-itself - the Adapter + Epub phases flipped D1-D4 from "planned" to
-"implemented" (file/line evidence added); D5 stays DEFERRED until Pipeline
-Phase 1 lands the `collectFootnotes?` SiteAdapter method.
+itself - the Adapter + Epub + Pipeline phases flipped D1-D5 from "planned" to
+"implemented" (file/line evidence added).
 
 ---
 
@@ -172,15 +171,15 @@ Evidence Phase 2 can rely on this.
 
 ---
 
-## D5 - `collectFootnotes` separated from `processChapterContent` because it needs live-page interaction (DEFERRED TO PIPELINE PHASE 1)
+## D5 - `collectFootnotes` separated from `processChapterContent` because it needs live-page interaction (IMPLEMENTED via Pipeline Phase 1)
 
 **Spec:** `docs/sites/webnovel-port-plan.md` §"Named phase `Adapter`" Phase 5
 step 8 ("the footnote collection happens in a separate adapter method
 `collectFootnotes(page)` that runs at chapter-extraction time").
 
-**Deviation (planned, deferred):** `SiteAdapter` will gain an OPTIONAL third
-method, `collectFootnotes?(page): Promise<Footnote[] | undefined>`, that lives
-alongside `scrapeVolumes` and `processChapterContent`. The footnote
+**Deviation (planned, landed in Pipeline Phase 1):** `SiteAdapter` gained
+an OPTIONAL third method, `collectFootnotes?(page): Promise<Footnote[] | undefined>`,
+that lives alongside `scrapeVolumes` and `processChapterContent`. The footnote
 *collection* (clicking `<sup>` inside `<anno data-annotation-id>` to trigger
 the `.anno-drop` popup and collect `.anno-drop-hd` / `.anno-drop-bd`) requires
 live-page interaction and cannot happen inside `processChapterContent` (which
@@ -202,19 +201,116 @@ it requires the LIVE page, not the post-extracted HTML that
 Phase 3 listing in the plan called out this small surface addition
 explicitly: "this small surface addition is added during Pipeline Phase 1 ...
 flagged here for awareness, not added to Scaffold Phase 3's signature listing
-as written." So the Adapter Phase 5 implementor is NOT the one adding it -
-Pipeline Phase 1 is. Pipeline Phase 1's implementor must add
-`collectFootnotes?` to `SiteAdapter.ts` and wire it from `ChapterExtractor`.
+as written." The Adapter Phase 5 implementor did NOT add it - Pipeline Phase
+1 did, per spec.
 
-**Status:** Adapter Phase 5 implemented `processChapterContent` (which
-produces the footnote section HTML given already-collected `Footnote[]` on
-its input). The actual `Footnote[]` collection mechanism is what's deferred
-- Pipeline Phase 1 adds the `collectFootnotes?(page): Promise<Footnote[] |
-undefined>` SiteAdapter method and the `ChapterExtractor` call sequence
-that runs it before `processChapterContent`. Until Pipeline Phase 1 lands,
-the webnovel adapter's `processChapterContent` is unit-tested with
-`footnotes` provided on the input (treated as if already collected); the
-live page click-loop is not yet wired.
+**Implementation (Pipeline Phase 1):**
+- `src/core/domain/SiteAdapter.ts`: optional `collectFootnotes?(page):
+  Promise<Footnote[] | undefined>` method added to `SiteAdapter` (the plan
+  explicitly reserved this slot; Scaffold Phase 3 left it absent).
+- `src/adapters/site-webnovel/WebnovelAdapter.ts`: `collectFootnotes(page)`
+  implemented. It runs the `FOOTNOTE_COLLECT_SCRIPT` string async-IIFE
+  browser-side (the script iterates `anno[data-annotation-id]`, clicks
+  each `<sup>`, waits 500ms for `.anno-drop` to appear, reads
+  `.anno-drop-hd` + `.anno-drop-bd`, closes the popup by clicking the
+  parent `<p>`, returns `Footnote[]`-shaped JSON). The adapter's
+  `collectFootnotes` swallows evaluateScript throws and returns
+  `undefined` (D5 fail-soft - the chapter extraction proceeds without
+  footnotes; ChapterExtractor's outer try-catch warn is defensive).
+- `src/core/services/ChapterExtractor.ts`: constructor gains an optional
+  `siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">`
+  arg (set by `ScrapeService` from its own `deps.siteAdapter`). Inside
+  `extract()`, after the generic extraction (challenge wait-out + content-
+  selector pull + exclude-selector strip + cheerio post-process + page
+  `<title>` fallback) AND before the sanitize-vs-adapter branch:
+  - if `collectFootnotes` is set, call it on the live page; the returned
+    `Footnote[]` is fed into `processChapterContent`'s `footnotes` input.
+  - if `processChapterContent` is set, call it with `{ rawHtml: root.html(),
+    title, footnotes }` and use its returned `htmlContent` as `clean`,
+    BYPASSING `sanitizeHtml` (the adapter supplies its own allow-list via
+    the reference's blacklist).
+  - if neither is set, the existing `sanitizeHtml` allow-list path runs.
+- `src/core/services/ScrapeService.ts`: `deps.siteAdapter` (optional)
+  propagates to the `new ChapterExtractor(log, siteAdapter)` constructor
+  call inside `run()`.
+- `src/adapters/ui-clack/screens/TaskScreen.ts`: `TaskScreenParams` gains
+  an optional `siteAdapter?` so the auto flow passes the resolved adapter
+  through (AutoProbeScreen -> AutoCustomizeScreen / fast path -> TaskScreen
+  carry it as a screen param).
 
+**Evidence:**
+- `src/core/domain/SiteAdapter.ts`:73-117 declares `collectFootnotes?` +
+  the `processChapterContent?` post-hook on `SiteAdapter`.
+- `src/adapters/site-webnovel/WebnovelAdapter.ts` `FOOTNOTE_COLLECT_SCRIPT`
+  + `collectFootnotes` function carry the live-page click-wait-collect
+  loop browser-side.
+- `src/core/services/ChapterExtractor.ts` `extract()` branches on
+  `this.siteAdapter?.processChapterContent` (precondition) and calls
+  `collectFootnotes` first when present.
+- `tests/webnovel-pipeline.test.ts` "invokes collectFootnotes before
+  processChapterContent when adapter provides both (D5 deviation)" -
+  RecordingPage records the evaluateScript call sequence and asserts the
+  footnote section is emitted into the chapter htmlContent.
+- `tests/webnovel-pipeline.test.ts` "proceeds without footnotes when
+  collectFootnotes returns empty (fail-soft)" guards the silent
+  footnoteless path.
+- `tests/webnovel-pipeline.test.ts` "ScrapeService deps.siteAdapter
+  propagates to ChapterExtractor so the adapter post-hook runs" proves
+  the end-to-end wiring without a real browser.
+
+
+---
+
+## D6 - `siteAdapter` injected as a `ScrapeService.deps` constructor arg, not via `JobConfig` (IMPLEMENTED via Pipeline Phase 1 / 2)
+
+**Spec:** `docs/sites/webnovel-port-plan.md` §"Named phase `Pipeline`" Phase 1:
+"ChapterExtractor constructor gains a private optional `siteAdapter?: SiteAdapter`
+field (set by `ScrapeService`)." The plan leaves the injection seam open -
+`JobConfig` and `run(...)` are both candidates.
+
+**Deviation:** The SiteAdapter reference is injected as a `ScrapeService.deps`
+constructor FIELD (named `siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">`),
+NOT carried as a `JobConfig` field, NOT threaded through `ScrapeService.run(...)` as a runtime arg.
+
+**Reason:** The adapter is lifecycle-scoped to the composition root
+(`runJob.ts`/`TaskScreen.ts`), not data-scoped to a job. The existing
+`ScrapeService.deps` shape (`{ browser, sessions, epub, ui, log }`) is the
+hexagonal-injection seam the v2 composition root already wires; adding
+`siteAdapter` there is the same pattern, with one consistent binding per
+composition-root invocation. JobConfig is the on-disk / persisted YAML job
+shape (per ADR-004: human-edited YAML for job files); the SiteAdapter is a
+runtime resolved at the composition root against the entry URL - threading it
+through JobConfig would force every consumer (session store, migration chain)
+to round-trip an unhelpful adapter reference. Per AGENTS.md "Schema additions
+are additive-optional only" + the JobConfig-persisted shape being YAML,
+attaching a SiteAdapter there is wrong-shaped.
+
+The `Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">`
+narrowing (vs the full `SiteAdapter`) keeps the ChapterExtractor +
+ScrapeService test doubles honest - they only see the two hooks the
+extractor actually calls, not the full adapter surface (matches the
+narrowest-port principle AGENTS.md §"Architecture - v2 layout rules" calls
+out as "ports define an adapter protocol").
+
+**Consequence:** A future caller of `ScrapeService.run` that wants the
+adapter hook path must wire `siteAdapter` into the constructor dep set.
+`runJob.ts` (the CLI / YAML flow) does NOT currently wire one - the YAML
+job files don't list adapter names. Adapter-resolution for the CLI flow is
+deferred to a future job-config schema bump (the current `runJob.ts` only
+loads YAML job files that have flat URLs and adapter-resolved selectors,
+not adapter-invoked discovery; webnovel volumes flow via the TUI auto-probe
+path - AutoProbeScreen -> AutoCustomizeScreen -> TaskScreen - not via the
+YAML CLI flow).
+
+**Evidence:**
+- `src/core/services/ScrapeService.ts`:42-55 declares `deps.siteAdapter?` +
+  forwards it to `new ChapterExtractor(this.deps.log, this.deps.siteAdapter)`.
+- `src/adapters/ui-clack/screens/TaskScreen.ts`:78 wires the screen param's
+  optional `siteAdapter` into the `new ScrapeService({...})` deps object.
+- `src/app/runJob.ts`:36-58 currently does NOT pass a `siteAdapter` (CLI /
+  YAML flows don't resolve one); the no-volumes EPUB path remains the default.
+- `tests/webnovel-pipeline.test.ts` "ScrapeService deps.siteAdapter propagates
+  to ChapterExtractor so the adapter post-hook runs" drives the constructor-deps
+  wiring through a real adapter instance.
 
 ---

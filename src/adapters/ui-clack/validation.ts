@@ -1,11 +1,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
-//  validation - pure presentation validators ported verbatim from v1 tui.
+//  validation - presentation validators (originally ported from v1 tui, now
+//  diverged where bug fixes required).
 //
 //  Lives in the adapter (not core) per readme §1.1 - these are presentation
-//  helpers for the prompt seam, not domain logic. Byte-identical behavior
-//  to v1's `validateDomain` (cookieManager.ts:57-67), `PROFILE_NAME_RE`
-//  (cookieManager.ts:70), `validateProfileNameChars` (cookieManager.ts:72-79),
-//  and `validateUrl` (prompts.ts:16-23).
+//  helpers for the prompt seam, not domain logic. `validateDomain` and
+//  `validateProfileNameChars` are byte-identical to v1's `prompts.ts` /
+//  `cookieManager.ts`. `validateUrl` was tightened to reject scheme-doubled
+//  URLs (e.g. `https://https://example.com`) and to accept bare hostnames
+//  (the caller normalizes via `normalizeUrl`); see
+//  docs/phase-3/adr.md ADR-P3-FIX-URL and docs/phase-3/deviation-log.md D10.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function validateDomain(val: string): boolean | string {
@@ -32,12 +35,39 @@ export function validateProfileNameChars(val: string): boolean | string {
 }
 
 export function validateUrl(val: string): boolean | string {
+  const trimmed = val.trim();
+  if (!trimmed) return "URL cannot be empty";
+  let candidate = trimmed;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) {
+    candidate = `https://${candidate}`;
+  }
+  let parsed: URL;
   try {
-    new URL(val.trim());
-    return true;
+    parsed = new URL(candidate);
   } catch {
     return "Please enter a valid URL (include https://)";
   }
+  if (!parsed.hostname.includes(".")) {
+    return "URL hostname looks invalid (no dot in hostname)";
+  }
+  return true;
+}
+
+/**
+ * normalizeUrl - prepend `https://` to a bare hostname the user typed, so the
+ * caller doesn't have to repeat the scheme-detection logic from `validateUrl`.
+ * Used at every call site that previously did `r.trim()` after a `validateUrl`
+ * prompt now that the validator accepts schemeless input.
+ *
+ * Returns the trimmed input unchanged when it already has a scheme; otherwise
+ * returns `https://` + the trimmed input.
+ */
+export function normalizeUrl(val: string): string {
+  const trimmed = val.trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
 }
 
 // ── Wizard helpers (ported verbatim from v1 src/tui/prompts.ts) ──────────────

@@ -20,6 +20,7 @@ import type {
 } from "../domain/JobConfig.js";
 import type { ScrapeSession } from "../domain/Session.js";
 import type { DomainCookie } from "../domain/Cookie.js";
+import type { Volume } from "../domain/Volume.js";
 import type {
   BrowserPort,
   BrowserHandle,
@@ -29,6 +30,7 @@ import type { SessionStore } from "../../ports/SessionStore.js";
 import type { EpubWriter } from "../../ports/EpubWriter.js";
 import type { UIAdapter } from "../../ports/UIAdapter.js";
 import type { Logger } from "../../ports/Logger.js";
+import type { SiteAdapter } from "../domain/SiteAdapter.js";
 
 const CHALLENGE_BACKOFF_MS = 45_000;
 const CHECKPOINT_SAVE_INTERVAL_MS = 4_000;
@@ -43,6 +45,16 @@ export class ScrapeService {
       epub: EpubWriter;
       ui: UIAdapter;
       log: Logger;
+      // Optional site-adapter hooks (ADR-P7-D + D5 deviation). When present,
+      // forwarded to ChapterExtractor so its extract() call runs
+      // adapter.collectFootnotes + adapter.processChapterContent after the
+      // generic extraction (challenge wait-out, content-selector pull,
+      // exclude-selector strip). Absent for site adapters that don't define
+      // those hooks (WTR-Lab, NovelFire) - the generic sanitize-html path
+      // keeps running. Injected via deps (not via run()) so the composition
+      // root owns the adapter resolution (matching the runJob pattern for
+      // every other adapter).
+      siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">;
     },
   ) {}
 
@@ -54,11 +66,16 @@ export class ScrapeService {
     job: JobConfig,
     cookies?: DomainCookie[],
     resume?: { session: ScrapeSession },
+    // Trailing-optional `volumes?` (ADR-P7-A) forwarded to EpubWriter at
+    // build time. On resume, session.volumes (if set) overrides this. When
+    // undefined the existing no-volumes EPUB output path runs
+    // byte-identical (regression-guarded by tests/epub-archiver.test.ts).
+    volumes?: Volume[],
   ): Promise<ScrapeResult> {
     const startedAt = Date.now();
     this.abortFlag = false;
 
-    const extractor = new ChapterExtractor(this.deps.log);
+    const extractor = new ChapterExtractor(this.deps.log, this.deps.siteAdapter);
     const browser = await this.deps.browser.launch({
       headless: job.headless,
       humanize: false,
@@ -74,6 +91,16 @@ export class ScrapeService {
           "No chapter URLs — discovery must run before ScrapeService",
         );
       }
+
+      // Resolve the volume map for this run. On resume, session.volumes (if
+      // set) overrides the caller-supplied `volumes?` because the session
+      // is the resumption checkpoint (Pipeline Phase 2 spec). On a fresh
+      // run, the caller-supplied `volumes?` (from AutoScrapeResult.volumes)
+      // is used. When neither is set, `undefined` flows to EpubWriter -
+      // its no-volumes path is byte-identical to today (regression-guarded
+      // by tests/epub-archiver.test.ts).
+      const resolvedVolumes =
+        resume?.session?.volumes ?? volumes ?? job.volumes ?? undefined;
 
       const concurrency = job.concurrency;
       const maxRetries = 3;
@@ -288,6 +315,7 @@ export class ScrapeService {
           job.metadata,
           job.outputDir,
           job.outputFilename,
+          resolvedVolumes,
         );
         this.deps.ui.emit({ type: "epub.done", path: epubPath });
 

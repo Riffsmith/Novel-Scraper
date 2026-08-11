@@ -20,6 +20,7 @@
 import { Cancel } from "../PromptProvider.js";
 import { parseRanges } from "../validation.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
+import type { AutoNovelVolume } from "../../../core/domain/Volume.js";
 
 type Action = "proceed" | "remove" | "add" | "reverse" | "view" | "back";
 
@@ -47,6 +48,11 @@ export interface ChapterListParams {
    * Carries the AutoScrapeResult + adapter + cookies + domain the
    * AutoCustomizeScreen needs. */
   replaceParams?: Record<string, unknown>;
+  /** Optional volume map for the review summary (Pipeline Phase 4). The
+   * auto flow forwards these from the adapter's `scrapeVolumes` walk so the
+   * review surface shows a per-volume line above the flat chapter list.
+   * No domain change - just informational context. */
+  volumes?: AutoNovelVolume[];
 }
 
 export class ChapterListScreen implements Screen {
@@ -56,11 +62,28 @@ export class ChapterListScreen implements Screen {
     const cfg = params as ChapterListParams;
     let current = [...cfg.urls];
 
-    while (true) {
-      ctx.prompt.log("info", cfg.title ?? "Chapter List Review");
-      ctx.prompt.log("info", `Found ${current.length} chapter(s)`);
-      printChapterList(ctx, current);
+    // Print the list ONCE, up-front. The Shell log region's header strip
+    // shows the banner once per session (ADR-P3-FIX-TUI), and the action
+    // prompt never needs the list reprinted above it. After remove / add /
+    // reverse we set `listDirty` and reprint once so the user sees the new
+    // state before the next prompt; the explicit "view" action also reprints.
+    // (fix-issue-tui-url-cleanliness §2.4.2 - previously reprinted all of
+    // title + count + per-volume summary + chapter list on every loop
+    // iteration, causing the log region to grow quadratically.)
+    ctx.prompt.log("info", cfg.title ?? "Chapter List Review");
+    ctx.prompt.log("info", `Found ${current.length} chapter(s)`);
+    if (cfg.volumes && cfg.volumes.length > 0) {
+      for (const v of cfg.volumes) {
+        ctx.prompt.log(
+          "dim",
+          `Volume: ${v.name} - ${v.chapterUrls.length} chapters`,
+        );
+      }
+    }
+    printChapterList(ctx, current);
+    let listDirty = false;
 
+    while (true) {
       const action = await ctx.prompt.select<Action>({
         message: "What would you like to do?",
         options: [
@@ -126,13 +149,10 @@ export class ChapterListScreen implements Screen {
           "success",
           `Order reversed - now starts at: ${current[0] ?? "(none)"}`,
         );
-        continue;
-      }
-      if (action === "view") {
+        listDirty = true;
+      } else if (action === "view") {
         printChapterList(ctx, current, current.length);
-        continue;
-      }
-      if (action === "remove") {
+      } else if (action === "remove") {
         ctx.prompt.log(
           "info",
           "Enter indices or ranges to remove, separated by commas.",
@@ -152,9 +172,8 @@ export class ChapterListScreen implements Screen {
           "success",
           `Removed ${before - current.length} chapter(s). ${current.length} remaining.`,
         );
-        continue;
-      }
-      if (action === "add") {
+        listDirty = true;
+      } else if (action === "add") {
         const r = await ctx.prompt.text({
           message: "Enter URLs to add (comma or newline separated):",
         });
@@ -178,7 +197,13 @@ export class ChapterListScreen implements Screen {
           "success",
           `Added ${added.length} URL(s). ${current.length} total.`,
         );
-        continue;
+        listDirty = true;
+      }
+
+      if (listDirty) {
+        ctx.prompt.log("info", `Updated: ${current.length} chapter(s)`);
+        printChapterList(ctx, current);
+        listDirty = false;
       }
     }
   }

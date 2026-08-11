@@ -17,12 +17,18 @@ import type { DomainCookie, StoredCookie } from "../../core/domain/Cookie.js";
 
 export class FakePage implements PageHandle {
   private $: cheerio.CheerioAPI;
+  /** URLs handed to `goto(...)` - exposed via the FakeBrowserPort for tests
+   *  that assert on what was actually navigated to (ADR-P3-FIX-TUI /
+   *  fix-issue-tui-url-cleanliness §2.5). */
+  gotoCalls: string[] = [];
 
   constructor(private html: string) {
     this.$ = cheerio.load(html);
   }
 
-  goto = async (_url: string, _opts: { waitUntil: WaitUntil; timeoutMs: number }) => {};
+  goto = async (url: string, _opts: { waitUntil: WaitUntil; timeoutMs: number }) => {
+    this.gotoCalls.push(url);
+  };
   title = async () => this.extractTitle();
   content = async () => this.html;
   urlRef = "";
@@ -136,6 +142,14 @@ export class FakeBrowserPort implements BrowserPort {
   private pageContent: string;
   private contextCookiesMap: StoredCookie[] = [];
   private ephemeralLaunches = 0;
+  /** Cookies handed to createContext(...) - additive test hook for any future
+   *  test that asserts cookies were attached to a context (ADR-P3-FIX-TUI /
+   *  fix-issue-tui-url-cleanliness §2.5 - no current test asserts on it). */
+  lastContextCookies: import("../../core/domain/Cookie.js").DomainCookie[] = [];
+  /** The most recent FakePage is held here so tests can assert on `gotoCalls`
+   *  after running a flow that created a context + page (ADR-P3-FIX-TUI).
+   *  Reset by `newPage()`. */
+  lastPage: FakePage | null = null;
 
   constructor(html: string = "") {
     this.pageContent = html;
@@ -143,18 +157,21 @@ export class FakeBrowserPort implements BrowserPort {
 
   setContent(html: string) {
     this.pageContent = html;
-    }
+  }
 
   async launch(_opts: BrowserLaunchOpts): Promise<BrowserHandle> {
     return { close: async () => {} };
   }
 
-  async createContext(_browser: BrowserHandle, _cookies?: DomainCookie[]): Promise<ContextHandle> {
+  async createContext(_browser: BrowserHandle, cookies?: DomainCookie[]): Promise<ContextHandle> {
+    if (cookies) this.lastContextCookies = [...cookies];
     return { close: async () => {} };
   }
 
   async newPage(_ctx: ContextHandle): Promise<PageHandle> {
-    return new FakePage(this.pageContent);
+    const page = new FakePage(this.pageContent);
+    this.lastPage = page;
+    return page;
   }
 
   async closeAll() {}

@@ -155,6 +155,11 @@ export class AutoCustomizeScreen implements Screen {
         cookies: p.cookies,
         domain: p.domain,
         isNewDomain: p.isNewDomain,
+        // Pipeline Phase 4: forward the resolved adapter to TaskScreen so
+        // ScrapeService can wire processChapterContent + collectFootnotes
+        // into ChapterExtractor. Flat-catalog adapters leave both
+        // methods unset; auto.volumes flows via job.volumes set above.
+        siteAdapter: p.adapter,
       },
     };
   }
@@ -223,5 +228,9 @@ function assembleAutoJob(
     delayMax: isNaN(delayMax) ? appCfg.defaultDelayMax : delayMax,
     headless: appCfg.headless,
     output: { epub: true },
+    // Pipeline Phase 4 (ADR-P7-A/B): flow the adapter's scraped volumes onto
+    // JobConfig so ScrapeService.run hands them to EpubWriter. Absent for
+    // flat-catalog adapters (wtr-lab, novelfire); auto.volumes stays undefined.
+    volumes: params.auto.volumes,
   };
 }

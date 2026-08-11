@@ -12,6 +12,10 @@
 //  `Cancel` is `isCancel()` translated to a single Symbol so screens don't
 //  repeat the `typeof x === 'symbol'` check - the standard pattern is
 //  `if (result === Cancel) return { action: 'pop' }`.
+//
+//  `note(message, title)` was added to ship a boxed "profile card" output
+//  region (ADR-P3-FIX-TUI) - no input, no Cancel path; clackPrompts wraps
+//  `clack.note` and ScriptedPromptProvider records the call for assertion.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const Cancel: unique symbol = Symbol("PromptProvider.Cancel");
@@ -52,4 +56,12 @@ export interface PromptProvider {
   };
 
   log(kind: "info" | "success" | "warn" | "error" | "dim", msg: string): void;
+
+  /**
+   * Render a single boxed region with a title and a multiline message body.
+   * Acquires no user input (no Cancel path). Used by SettingsScreen.printProfile
+   * to collapse ~14 row-by-row log calls into one visual "profile card"
+   * (fix-issue-tui-url-cleanliness §2.4.3).
+   */
+  note(message?: string, title?: string): void;
 }
