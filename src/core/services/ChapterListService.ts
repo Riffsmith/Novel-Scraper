@@ -11,6 +11,8 @@ import type { Logger } from "../../ports/Logger.js";
 import type { UIAdapter } from "../../ports/UIAdapter.js";
 import type { NextLocator } from "../domain/Locator.js";
 import { formatLocator } from "./SelectorService.js";
+import { ChapterExtractor } from "./ChapterExtractor.js";
+import { SecurityChallengeError } from "../errors.js";
 
 const NON_CHAPTER_PATTERNS = [
   /\/login/i, /\/register/i, /\/signup/i, /\/logout/i,
@@ -25,7 +27,17 @@ const NON_CHAPTER_PATTERNS = [
 const MAX_CHAPTERS = 10_000;
 
 export class ChapterListService {
-  constructor(private log: Logger, private ui: UIAdapter) {}
+  // Optional challenge wait-out injection (fix-issue-tui-url-cleanliness §3.5.1).
+  // When present, `collectSequential` and `discoverTOC` call
+  // `extractor.waitOutChallenge(page)` after every `page.goto` and throw
+  // `SecurityChallengeError` on a stuck challenge instead of silently breaking
+  // the walk. Absent for callers that never present a challenge (preserves the
+  // pre-fix behavior exactly for sites that don't need it).
+  constructor(
+    private log: Logger,
+    private ui: UIAdapter,
+    private extractor?: ChapterExtractor,
+  ) {}
 
   async discoverTOC(
     page: PageHandle,
@@ -53,6 +65,13 @@ export class ChapterListService {
 
       await page.goto(current, { waitUntil, timeoutMs: navTimeoutMs });
       await delay(randomInt(800, 1800));
+
+      if (this.extractor) {
+        const challenge = await this.extractor.waitOutChallenge(page);
+        if (challenge === "stuck") {
+          throw new SecurityChallengeError(current);
+        }
+      }
 
       const html = await page.content();
       const $ = cheerio.load(html);
@@ -159,7 +178,15 @@ export class ChapterListService {
       try {
         await page.goto(currentUrl, { waitUntil, timeoutMs: navTimeoutMs });
         await delay(Math.floor(delayMin * 0.4));
+
+        if (this.extractor) {
+          const challenge = await this.extractor.waitOutChallenge(page);
+          if (challenge === "stuck") {
+            throw new SecurityChallengeError(currentUrl);
+          }
+        }
       } catch (e) {
+        if (e instanceof SecurityChallengeError) throw e;
         this.log.error(`Navigation failed: ${currentUrl}`, { error: (e as Error).message });
         break;
       }

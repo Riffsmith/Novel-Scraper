@@ -1,17 +1,26 @@
-# Fix Proposal: URL Double-Prefix Bug + TUI Cleanliness Pass
+# Fix Proposal: URL Double-Prefix Bug + TUI Cleanliness Pass + Sequential Discovery Challenge Wait-Out
 
-Status: proposal only. No business logic changed in this work. Every fix below is
-described with handholding detail (exact files, line numbers, snippets, and tests)
-so a follow-up commit can land it in one pass.
+Status: §3 (Sequential Discovery Challenge Wait-Out) has shipped as a bug-fix
+implementation - see `docs/01-architecture-decisions.md` ADR-007 and
+`docs/bug-fix-discovery-deviation-log.md` for the ADR + divergence record.
+The remaining sections (§1 URL double-prefix, §2 TUI cleanliness) are still
+proposal only; no business logic changed for those in this work. Every fix
+below is described with handholding detail (exact files, line numbers,
+snippets, and tests) so a follow-up commit can land it in one pass.
 
-This doc covers two confirmed problems:
+This doc covers three confirmed problems:
 
 1. **URL double-prefix bug** in the "Log in via browser" cookie-capture flow
 2. **TUI noise / cleanliness** - several screens overprint the log region on every
    loop iteration and the Shell never renders the header/footer strips the Phase 3
    design doc calls for
+3. **Sequential discovery closes the browser without waiting out security challenges** -
+   the manual sequential wizard's discovery phase has no `waitOutChallenge` /
+   `SecurityChallengeError` machinery (unlike the scrape phase), so a first-page
+   Cloudflare challenge causes the discovery browser to close immediately and the
+   user gets back a one-URL (or zero-URL) list with no retry
 
-A third topic (cookies not used for metadata/chapter-link scraping) was investigated
+A fourth topic (cookies not used for metadata/chapter-link scraping) was investigated
 and determined to be a non-issue - cookies ARE attached on both the TUI auto-probe
 path (`AutoProbeScreen` via `scope.resolveCookiesForScrape`) and the CLI `run`
 path (driven by `--cookies-file`). Excluded from this proposal.
@@ -670,9 +679,620 @@ contains exactly one `info` row matching the banner regex.
 Each step can be its own commit. Steps 1 and 2 close the URL bug; steps
 3 and 4 close the TUI noise.
 
+For section 3 (sequential discovery challenge wait-out) the rollout order
+within that section is:
+
+1. **`FakeBrowserPort` `gotoCalls` recording** (carried over from §2.5) -
+   prerequisite for the §3.7 retry tests. Land first.
+2. **`ChapterListService` constructor change + `waitOutChallenge`
+   injection** (`§3.5.1`) with the stuck-challenge unit test. Pure
+   behavior-preserving on sites that never present a challenge.
+3. **`discoverJobChapters` retry loop** (`§3.5.2`) with the
+   retry-on-challenge behavioral test using fake timers.
+4. **`ManualDiscoveryScreen` `challenge.waiting` UI handler** (`§3.5.3`)
+   so the user sees the wait instead of an apparent hang during the
+   30-second in-page poll.
+
+Step 2 is the load-bearing seam. Step 3 alone (without 2) would not help
+because the existing `ChapterListService` cannot even signal a stuck
+challenge - it silently breaks the walk. Step 4 alone (without 3) would
+let the user see the wait but the discovery would still give up after one
+in-page wait-out rather than retrying. So ship step 2 first, then 3, then 4.
+Step 1 is shared with the URL-bug rollout and only needs to land once.
+
 ---
 
-## 3. Out-of-Scope
+## 3. Sequential Discovery Closes Browser Without Waiting Out Security Challenges
+
+Status: SHIPPED. ADR-007 (`docs/01-architecture-decisions.md`) +
+`docs/bug-fix-discovery-deviation-log.md` record the implementation and
+divergences from the design sketch here. Sections 3.1-3.10 below are the
+original proposal text preserved for reference; the live source of truth for
+the shipped behaviour is now the ADR + deviation log + the test files
+referenced there (the inline snippets here are the proposal's sketches and
+may differ from the landed code in details captured in the deviation log).
+
+### 3.1 Symptom
+
+User runs the manual sequential wizard: they enter a `firstChapterUrl`,
+`lastChapterUrl`, and one or more `nextButtonLocators`. The screen then
+hands off to discovery (`ManualDiscoveryScreen`), which opens the first
+chapter URL. If that first page (or any subsequent page in the next-button
+walk) is intercepted by a Cloudflare / anti-bot challenge, the browser
+closes immediately without waiting for the challenge to auto-resolve. The
+discovery returns a URL list containing only the first URL (or an
+incomplete prefix of the chain), and the user is dropped back at the
+"Discovered N chapter URL(s)" summary with a misleadingly short list
+(or none, depending on the failure shape). The challenge machinery that
+the user can observe working during the actual scrape (`"challenge.waiting"`
+events, 30-second in-page poll, 45-second `CHALLENGE_BACKOFF_MS` retry)
+never fires.
+
+The same defect affects the `toc` discovery method (`discoverTOC`):
+ Cloudflare intercepts the TOC URL, the page DOM contains `#challenge-form`
+instead of chapter links, `discoverTOC` collects zero links, and the
+`finally` block closes the browser. The sequential framing in the user's
+report is just the more visible case (`firstChapterUrl` is the only URL the
+user can supply, so the whole walk happens on a single chain that starts
+at the challenge).
+
+### 3.2 Root Cause
+
+There are two distinct lifecycle phases in `runJob` (`src/app/runJob.ts:54-56`),
+and they have asymmetric challenge handling:
+
+1. **Discovery phase** (`discoverJobChapters`) - launches its own browser (
+   `DiscoveryService.ts:50-57`), walks the TOC or next-button chain via
+   `ChapterListService`, closes the browser in a `finally` block (
+   `DiscoveryService.ts:90-92`). **`DiscoveryService` and `ChapterListService`
+   do NOT import or call `waitOutChallenge`, `detectChallenge`, or
+   `SecurityChallengeError`.** Confirmed by grep: zero matches in either file.
+
+2. **Scrape phase** (`ScrapeService.run`) - launches its own browser (
+   `ScrapeService.ts:65-87`), per-chapter extraction calls
+   `ChapterExtractor.extract` which calls `waitOutChallenge` after every
+   `page.goto` (`ChapterExtractor.ts:169`), and `ScrapeService`'s catch
+   block applies the 45-second `CHALLENGE_BACKOFF_MS` retry on
+   `SecurityChallengeError` (`ScrapeService.ts:233-275`).
+
+The challenge machinery exists and works. It is just not wired into the
+discovery phase at all. `runJob.ts:54-56`:
+
+```ts
+if (!job.chapterLinks && !resume) {
+  job.chapterLinks = await discoverJobChapters(job, { browser, cookies, ui, log });
+}
+```
+
+`discoverJobChapters` runs to completion (or failure) and closes its
+browser before `ScrapeService` ever gets a chance to handle challenges.
+When the user supplies `chapterLinks` directly (pre-resolved list, or
+auto-probe flow, or resume from session), `discoverJobChapters` short-
+circuits at `DiscoveryService.ts:46-48` and never opens a browser - so
+the scrape phase owns challenges end-to-end and the bug does not fire.
+The bug is exclusively a discovery-phase defect.
+
+### 3.3 Confirmed Control-Flow Path
+
+The user's report maps to this exact path (file paths and line numbers
+quoted verbatim from the current tree):
+
+**`src/adapters/ui-clack/screens/ManualWizardScreen.ts:225-235`** - the
+wizard produces a `JobConfig` with empty `chapterLinks` and `method:
+"sequential"` plus `firstChapterUrl` / `lastChapterUrl` /
+`nextButtonLocators`, then pushes `ManualDiscoveryScreen`.
+
+**`src/adapters/ui-clack/screens/ManualDiscoveryScreen.ts:42-49`** - the
+screen calls the shared `discoverJobChapters` helper:
+
+```ts
+urls = await discoverJobChapters(job, {
+  browser: ctx.browser,
+  cookies,
+  ui,
+  log: ctx.log,
+});
+```
+
+**`src/core/services/DiscoveryService.ts:59-92`** - the helper opens a
+browser, creates one context, builds one page, dispatches to
+`ChapterListService`, then unconditionally closes everything in `finally`:
+
+```ts
+try {
+  const ctx = await deps.browser.createContext(browserHandle, deps.cookies);
+  const page = await deps.browser.newPage(ctx);
+  const listService = new ChapterListService(deps.log, deps.ui);
+
+  let urls: string[];
+  if (job.method === "toc" && job.tocUrl) {
+    urls = await listService.discoverTOC(page, job.tocUrl, "domcontentloaded", 30_000);
+  } else if (
+    job.method === "sequential" &&
+    job.firstChapterUrl &&
+    job.lastChapterUrl &&
+    job.nextButtonLocators
+  ) {
+    urls = await listService.collectSequential(
+      page,
+      job.firstChapterUrl,
+      job.lastChapterUrl,
+      job.nextButtonLocators,
+      job.delayMin,
+      job.delayMax,
+      "domcontentloaded",
+      30_000,
+    );
+  } else {
+    throw new Error("Invalid discovery config");
+  }
+
+  await page.close();
+  await ctx.close();
+  return urls;
+} finally {
+  await browserHandle.close();   // <-- closes regardless of page state
+}
+```
+
+**`src/core/services/ChapterListService.ts:140-168`** - inside
+`collectSequential`, the first iteration pushes `firstChapterUrl` onto
+`links` BEFORE doing any challenge check, then calls `page.goto`, then
+calls `resolveNext` to find a next-button:
+
+```ts
+while (currentUrl && links.length < MAX_CHAPTERS) {
+  if (visited.has(currentUrl)) {
+    this.log.warn(`Navigation loop detected at ${currentUrl} - stopping`);
+    break;
+  }
+  visited.add(currentUrl);
+  links.push(currentUrl);                       // pushed before challenge check
+
+  this.ui.emit({ type: "discovery.progress", found: links.length, pages: visited.size });
+
+  if (currentUrl === lastUrl) {
+    this.log.info(`Reached last chapter. Collected ${links.length} URL(s).`);
+    break;
+  }
+
+  try {
+    await page.goto(currentUrl, { waitUntil, timeoutMs: navTimeoutMs });  // challenge page
+    await delay(Math.floor(delayMin * 0.4));
+  } catch (e) {
+    this.log.error(`Navigation failed: ${currentUrl}`, { error: (e as Error).message });
+    break;
+  }
+
+  const resolved = await this.resolveNext(page, locators, hits, links.length);
+  if (!resolved) break;                         // bails - no next-button on a CF page
+  // ... never reaches the click/href-walk below ...
+```
+
+On a Cloudflare challenge page the DOM contains `#challenge-form` and
+similar markers, NOT the site's next-button. `resolveNext` tries each
+locator in turn (`findAnchorByRegex` / `findElement` / `findElement` with
+`xpath=` prefix) and returns `null` because none of them match the
+challenge DOM. The walk breaks on the first iteration. `links` = `[firstChapterUrl]`.
+`discoverJobChapters` returns that single-URL list. The `finally` fires
+`browserHandle.close()`. The user is presented with a "Discovered 1
+chapter URL(s)" summary, and if they proceed, the scrape phase then opens
+that same URL in a fresh browser - which may or may not hit the challenge
+again (and if it does, `ScrapeService` will wait it out, so the scrape
+phase itself is fine once discovery has handed back real URLs).
+
+The `discoverTOC` failure shape is even more obvious: zero links collected
+because the challenge DOM has no matching `<a href>` anchors, the screen
+shows "No chapter links found on the TOC page", and the user is told to
+"add session cookies" when the actual cause is a transient challenge the
+app never let clear.
+
+### 3.4 Why the Existing Challenge Machinery Doesn't Catch This
+
+`ChapterExtractor.detectChallenge` and `waitOutChallenge` are the canonical
+challenge handlers (`src/core/services/ChapterExtractor.ts:110-153`). They
+are ONLY invoked from `ChapterExtractor.extract`, which is ONLY invoked
+from `ScrapeService.processTask` (`ScrapeService.ts:177`). The discovery
+phase has no seam to call them. There is no `SecurityChallengeError`
+thrown from discovery, no 30-second poll, no `challenge.waiting` UI event,
+no backoff. The discovery browser just shuts down. This is a load-bearing
+asymmetry: the challenge machinery was built for the scrape loop and
+never extended to the discovery loop, even though the discovery loop
+performs the same `page.goto` on the same domain (often the same URL, if
+`firstChapterUrl === chapter[0]`).
+
+### 3.5 Proposed Implementation Design
+
+The minimal, in-pattern fix wires the existing `ChapterExtractor.waitOutChallenge`
+into the discovery phase at two seams. No new challenge logic is invented;
+the existing constants (`CHALLENGE_MAX_WAIT_MS = 30_000`, `CHALLENGE_POLL_MS
+= 2_000`, `CHALLENGE_BODY_TEXT_MAX_LEN = 2_000`) and the existing three-tier
+detection from `ChapterExtractor.ts:24-48, 110-133` are reused verbatim.
+The fix has three coordinated parts.
+
+#### 3.5.1 Inject challenge wait-out into `ChapterListService.collectSequential`/`discoverTOC`
+
+`ChapterListService` currently takes `(log, ui)` in its constructor
+(`ChapterListService.ts:28`). Add an optional `ChapterExtractor` dependency
+so the service can wait out a challenge after every `page.goto`.
+
+**`src/core/services/ChapterListService.ts` - constructor change:**
+
+```ts
+import { ChapterExtractor } from "./ChapterExtractor.js";
+import { SecurityChallengeError } from "../errors.js";
+
+export class ChapterListService {
+  constructor(
+    private log: Logger,
+    private ui: UIAdapter,
+    private extractor?: ChapterExtractor,
+  ) {}
+```
+
+**`src/core/services/ChapterListService.ts` - inside `collectSequential`,
+after the `page.goto` at line 160, add the wait-out:**
+
+```ts
+try {
+  await page.goto(currentUrl, { waitUntil, timeoutMs: navTimeoutMs });
+  await delay(Math.floor(delayMin * 0.4));
+
+  if (this.extractor) {
+    const challenge = await this.extractor.waitOutChallenge(page);
+    if (challenge === "stuck") {
+      throw new SecurityChallengeError(currentUrl);
+    }
+  }
+} catch (e) {
+  if (e instanceof SecurityChallengeError) throw e;   // propagate, do NOT silently break
+  this.log.error(`Navigation failed: ${currentUrl}`, { error: (e as Error).message });
+  break;
+}
+```
+
+The same seam belongs in `discoverTOC` immediately after line 54 (`await
+page.goto(current, { waitUntil, timeoutMs: navTimeoutMs });`). For TOC the
+"stuck" outcome can reasonably drop the page from the queue and continue
+to the next TOC page, but the simpler, consistent behavior is to throw
+`SecurityChallengeError` and let the caller decide. The
+`DiscoveryService.waitForChallengeToClear` retry loop (3.5.2 below) will
+retry the whole discovery, so throwing is the right call.
+
+#### 3.5.2 Add a discovery-phase retry loop in `discoverJobChapters`
+
+`ScrapeService` already has a `maxRetries = 3` + `CHALLENGE_BACKOFF_MS`
+loop (`ScrapeService.ts:106, 233-275`). Mirror that shape in
+`DiscoveryService` so a stuck challenge backs off and re-attempts the
+whole discovery from scratch. The discovery browser is cheap to relaunch
+(one context, one page) and the failure mode today is "give up on the
+first stuck challenge", so a parallel retry loop is the right design (not
+a per-URL retry, which discovery doesn't track because it walks a chain).
+
+**`src/core/services/DiscoveryService.ts` - restructure the body:**
+
+```ts
+import { ChapterExtractor } from "./ChapterExtractor.js";
+import { SecurityChallengeError } from "../errors.js";
+
+const DISCOVERY_MAX_RETRIES = 3;
+const DISCOVERY_CHALLENGE_BACKOFF_MS = 45_000;
+
+export async function discoverJobChapters(
+  job: JobConfig,
+  deps: { browser: BrowserPort; cookies: DomainCookie[]; ui: UIAdapter; log: Logger },
+): Promise<string[]> {
+  if (job.chapterLinks && job.chapterLinks.length > 0) {
+    return job.chapterLinks;
+  }
+
+  const extractor = new ChapterExtractor(deps.log);
+  let attempt = 0;
+
+  while (true) {
+    attempt++;
+    const browserHandle = await deps.browser.launch({
+      headless: job.headless,
+      humanize: false,
+      humanPreset: "default",
+      fingerprintSeed: null,
+      timezone: "America/New_York",
+      locale: "en-US",
+    });
+    try {
+      const ctx = await deps.browser.createContext(browserHandle, deps.cookies);
+      const page = await deps.browser.newPage(ctx);
+      const listService = new ChapterListService(deps.log, deps.ui, extractor);
+
+      let urls: string[];
+      if (job.method === "toc" && job.tocUrl) {
+        urls = await listService.discoverTOC(page, job.tocUrl, "domcontentloaded", 30_000);
+      } else if (
+        job.method === "sequential" &&
+        job.firstChapterUrl &&
+        job.lastChapterUrl &&
+        job.nextButtonLocators
+      ) {
+        urls = await listService.collectSequential(
+          page, job.firstChapterUrl, job.lastChapterUrl,
+          job.nextButtonLocators, job.delayMin, job.delayMax,
+          "domcontentloaded", 30_000,
+        );
+      } else {
+        throw new Error("Invalid discovery config");
+      }
+
+      await page.close();
+      await ctx.close();
+      return urls;
+    } catch (e) {
+      const isChallenge = e instanceof SecurityChallengeError;
+      if (isChallenge && attempt <= DISCOVERY_MAX_RETRIES) {
+        deps.ui.emit({ type: "challenge.waiting", url: job.firstChapterUrl ?? job.tocUrl ?? "" });
+        deps.log.warn(
+          `Security challenge during discovery (attempt ${attempt}/${DISCOVERY_MAX_RETRIES}) - retrying after ${attempt * DISCOVERY_CHALLENGE_BACKOFF_MS}ms`,
+        );
+        await delay(attempt * DISCOVERY_CHALLENGE_BACKOFF_MS);
+        continue;   // relaunch the discovery browser and try the walk again
+      }
+      throw e;       // non-challenge error, or out of retries: bubble to the screen
+    } finally {
+      await browserHandle.close();
+    }
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+```
+
+This mirrors `ScrapeService.ts:233-275` line for line in shape: same
+backoff math (`attempt * CHALLENGE_BACKOFF_MS`), same `challenge.waiting`
+UI event, same `maxRetries = 3`. A discovery browser that hits a stuck
+challenge now waits (in-page 30s poll first, then 45s/90s/135s inter-
+attempt backoff with a fresh browser per attempt) before giving up. The
+relaunch is critical: a stuck challenge is often transient (site is
+rate-limiting the fingerprint), and a fresh browser context gets a fresh
+TLS session + fingerprint seed, which is the documented behavioral
+contract (`ChapterListService.collectSequential` reusing a single context
+across challenge retries would just keep hitting the same fingerprint).
+
+#### 3.5.3 Wire `ChapterExtractor` through from `ManualDiscoveryScreen` / `AutoProbeScreen`
+
+`ManualDiscoveryScreen.ts:44-49` and `runJob.ts:55` already construct
+`discoverJobChapters`'s deps inline; no caller change is needed because
+step 3.5.2 constructs the `ChapterExtractor` internally. The TUI emits
+`discovery.progress` today; the new `challenge.waiting` event during
+discovery needs a UI-side handler in `ManualDiscoveryScreen` so the user
+sees a message instead of an apparent hang during the 30-second poll.
+
+**`src/adapters/ui-clack/screens/ManualDiscoveryScreen.ts` - inside the
+existing `new ClackUIAdapter(ctx.prompt)` block, before the
+`discoverJobChapters` call:**
+
+```ts
+const ui = new ClackUIAdapter(ctx.prompt);
+ui.onEvent((e) => {
+  if (e.type === "challenge.waiting") {
+    ctx.prompt.log("warn", `Security challenge detected - waiting for it to clear...`);
+  }
+});
+```
+
+`TaskScreen.ts:111-122` already routes the same event to the spinner
+message during the scrape phase; this is the discovery-phase analogue.
+
+### 3.6 Why This Design (and Not the Alternatives)
+
+**Rejected alternative A - "just reuse `ScrapeService`'s wait-out by
+running discovery inside the scrape loop".** Discovery and scrape have
+fundamentally different per-iteration shapes (discovery walks a chain
+via `resolveNext`; scrape does `extract` on a known URL). Merging them
+would force `ScrapeService` to know about `nextButtonLocators`, which
+breaks the existing invariant that `ScrapeService` is method-agnostic
+(`grep job.method ScrapeService.ts` returns zero matches; this is a
+deliberate boundary). Out of scope and worse than the proposed fix.
+
+**Rejected alternative B - "extend the `BrowserPort` to add a
+`gotoAndWaitOutChallenge` method on the port".** This would put
+challenge-detection signatures into the port interface, which mixes
+domain semantics (challenges are an app-layer concept) into the browser
+abstraction. The existing design keeps `waitOutChallenge` in
+`ChapterExtractor` (a core service) and call it through `PageHandle`;
+that is the right layer. The fix proposed here stays in that layer.
+
+**Rejected alternative C - "add a `SecurityChallengeError` retry loop
+inside `ChapterListService.collectSequential` per-URL".** Discovery
+walks a chain, not a fixed list, so retrying a single URL mid-walk just
+re-hits the same fingerprint on the same context. The fix that actually
+works is the full-relaunch retry in `discoverJobChapters`, because it
+gets a new context + browser per attempt - matching the documented
+fingerprint refresh behavior.
+
+**Why reuse `ChapterExtractor.waitOutChallenge` instead of duplicating
+the constants.** AGENTS.md mandates the three-tier ordering and the
+2,000-char body-text length gate, and explicitly warns that the
+challenge detection logic must not be silently diverged from the v1
+baseline. `ChapterExtractor.detectChallenge` / `waitOutChallenge` are
+the canonical, tested implementation (`tests/chapter-extractor.test.ts:174-196`
+covers both DOM-marker and title-regex detection). Duplicating the
+constants or the logic in `ChapterListService` would create a second
+source of truth that could drift. Injecting the existing service is the
+minimum-change fix that preserves the existing detection semantics
+exactly.
+
+**Why construct `ChapterExtractor` inside `discoverJobChapters` rather
+than pass it as a dep.** `discoverJobChapters`'s caller (`runJob.ts:55`
+and `ManualDiscoveryScreen.ts:44`) already constructs the browser and
+log; adding a fourth arg for `ChapterExtractor` is more change at every
+caller for no argument-injection benefit (the extractor has no state and
+takes only a `Logger`). Constructing it internally matches the pattern
+in `ScrapeService.run` (`ScrapeService.ts:67`: `const extractor = new
+ChapterExtractor(this.deps.log, this.deps.siteAdapter)`).
+
+### 3.7 Testing
+
+There are currently NO tests for `discoverJobChapters` or
+`ChapterListService` (grep `tests/` returns zero matches). The fix should
+add the first tests for both, in the parity-test pattern AGENTS.md
+specifies for new service code (`tests/epub-archiver.test.ts` /
+`tests/session-store.test.ts` are the named patterns).
+
+**Unit tests for `ChapterListService.collectSequential` challenge
+wait-out** (`tests/chapter-list-service.test.ts` - new file, modeled on
+`tests/chapter-extractor.test.ts:174-196`):
+
+```ts
+import { describe, it, expect } from "vitest";
+import { ChapterListService } from "../src/core/services/ChapterListService.js";
+import { ChapterExtractor } from "../src/core/services/ChapterExtractor.js";
+import { SecurityChallengeError } from "../src/core/errors.js";
+import { FakePage } from "../src/adapters/store-memory/FakeBrowserPort.js";
+import { NoopUIAdapter } from "../src/adapters/ui-noop/NoopUIAdapter.js";
+
+describe("ChapterListService.collectSequential - challenge handling", () => {
+  it("throws SecurityChallengeError when the first page is a stuck challenge", async () => {
+    const html = fs.readFileSync(path.join(__dirname, "fixtures", "chapter-challenge.html"), "utf8");
+    const page = new FakePage(html);
+    const extractor = new ChapterExtractor(makeLogger());
+    const svc = new ChapterListService(makeLogger(), new NoopUIAdapter(), extractor);
+
+    await expect(
+      svc.collectSequential(
+        page, "http://test/ch1", "http://test/ch3",
+        [{ kind: "css", value: ".next" }], 10, 20, "domcontentloaded", 5_000,
+      ),
+    ).rejects.toThrow(SecurityChallengeError);
+  });
+
+  it("proceeds with the walk when the challenge clears within the wait-out window", async () => {
+    // FakePage variant that swaps to a real chapter HTML after N locatorCount calls;
+    // assert the returned URL list has length > 1 (i.e. the walk continued).
+  });
+});
+```
+
+Use the existing fixture `tests/fixtures/chapter-challenge.html` for the
+stuck case (it already drives `detectChallenge` to `matched: true` in
+`chapter-extractor.test.ts:175-186`). The "clears within window" case
+needs a `FakePage` variant whose `locatorCount` / `bodyInnerText` flips
+from challenge markers to empty after the first poll - that is a small
+extension to `FakePage` (a `postPollHtml` field, or a call-counting
+override). It is straightforward because `FakePage` is an in-memory mock.
+
+**Behavioral test for `discoverJobChapters` retry loop** (same file):
+
+```ts
+import { describe, it, expect, vi } from "vitest";
+import { discoverJobChapters } from "../src/core/services/DiscoveryService.js";
+import { FakeBrowserPort } from "../src/adapters/store-memory/FakeBrowserPort.js";
+
+describe("discoverJobChapters - challenge retry", () => {
+  it("retries discovery up to DISCOVERY_MAX_RETRIES on a stuck challenge, then bubbles", async () => {
+    const fakeBrowser = new FakeBrowserPort(/* scenario */);
+    const job = makeSequentialJob({ firstChapterUrl: "http://test/ch1", ... });
+
+    await expect(
+      discoverJobChapters(job, { browser: fakeBrowser, cookies: [], ui, log }),
+    ).rejects.toThrow(SecurityChallengeError);
+
+    expect(fakeBrowser.launches).toBe(DISCOVERY_MAX_RETRIES + 0);  // attempted, never succeeded
+  });
+
+  it("returns the URL list on the second attempt if the first hits a stuck challenge that clears on retry", async () => {
+    // scenario: first launch serves challenge HTML, second launch serves real chapters.
+  });
+});
+```
+
+The `FakeBrowserPort` already implements `PageHandle` (`store-memory/FakeBrowserPort.ts:18-141`)
+and supports `locatorCount` / `bodyInnerText` / `title`, so a discovery
+retry test is achievable without a real browser. The retry test must use
+fake timers (`vi.useFakeTimers()`) to advance the 30-second poll and
+45-second backoff without wall-clock waits; this is the existing pattern
+the acceptance tests use (`tests/acceptance.test.ts` is gated on
+`CLOAKBROWSER_BINARY_AVAILABLE=1` precisely so the unit test layer
+doesn't have to wait real seconds).
+
+**The `FakeBrowserPort` recording improvement from 2.5 is a
+prerequisite.** `FakeBrowserPort.goto` currently discards its `_url`
+(`store-memory/FakeBrowserPort.ts:25`); to assert "the discovery walk
+re-tried the same `firstChapterUrl`", the test needs to inspect
+`page.gotoCalls` (or `fakeBrowser.contexts[0].pages[0].gotoCalls`).
+Without that recording improvement, the discovery retry tests can only
+assert on the launch count and the eventual rejection, not on which URL
+was attempted. Land 2.5 first, then this section's tests.
+
+### 3.8 Migration / Compatibility
+
+No data migration. No store schema change. No `JobConfig` shape change.
+The fix is purely behavioral (discovery side-effect ordering). The user-
+observable change is: discovery that previously failed silently with a
+short/wrong URL list now waits up to ~30s + 3x45s for a Cloudflare
+challenge to clear, mirroring the scrape phase's existing behavior. Users
+on sites that never present a challenge see no change. Users on sites
+that do present a transient challenge get the discovery to actually
+succeed instead of returning garbage.
+
+The `challenge.waiting` event during discovery is a new event on the
+discovery code path, but the event type itself already exists in the
+`ScrapeEvent` union (`core/services/events.ts`) - the same event fires
+during the scrape phase. No new event type is invented; the UI adapter
+already knows how to render it. The TUI side has to route it from the
+discovery-specific UI adapter (ManualDiscoveryScreen's local
+`ClackUIAdapter`) instead of from TaskScreen's, which is the
+one-handler addition in 3.5.3. NoopUIAdapter already no-ops it.
+
+### 3.9 Files Touched
+
+| File | Change |
+|------|--------|
+| `src/core/services/ChapterListService.ts` | Add optional `extractor: ChapterExtractor` to constructor; call `extractor.waitOutChallenge(page)` after every `page.goto` in both `discoverTOC` and `collectSequential`; throw `SecurityChallengeError` on "stuck"; import `ChapterExtractor` + `SecurityChallengeError` |
+| `src/core/services/DiscoveryService.ts` | Wrap the discovery body in a `while (true) { attempt++ }` loop; construct a `ChapterExtractor` internal to the function; on `SecurityChallengeError`, if `attempt <= DISCOVERY_MAX_RETRIES`, emit `challenge.waiting`, back off `attempt * 45_000ms`, relaunch a fresh browser and retry; else bubble |
+| `src/adapters/ui-clack/screens/ManualDiscoveryScreen.ts` | Add a `ui.onEvent` handler for `challenge.waiting` that logs a warn row so the user sees the wait |
+| `tests/chapter-list-service.test.ts` (new) | Add the first tests for `ChapterListService`: stuck-challenge throws `SecurityChallengeError`; cleared-challenge proceeds with walk |
+| `tests/discovery-service.test.ts` (new) | Add the first tests for `discoverJobChapters`: retry-on-challenge behavior, eventual bubble after `DISCOVERY_MAX_RETRIES`, fresh-browser-per-attempt |
+| `tests/fixtures/chapter-challenge.html` (unchanged) | Reused as-is; no new fixture needed for the stuck case (the clearing case needs a `FakePage` variant, not a new HTML fixture) |
+
+### 3.10 Out-of-Scope For This Section
+
+These were considered and excluded:
+
+- **Auto-probe flow's challenge handling** (`AutoProbeScreen.ts:95-160`):
+  The auto flow uses per-domain `SiteAdapter.scrapeChapterLinks` /
+  `scrapeMetadata`, which call `page.goto` themselves and have no
+  challenge wait. That is a parallel defect on a different code path
+  (the user's report is specifically the manual sequential wizard).
+  Fixing the auto-probe flow requires adding challenge wait-out to each
+  site adapter's `scrapeChapterLinks`, which is a larger, scattergun
+  change and out of scope for this sequential-discovery fix. The
+  `ChapterExtractor.waitOutChallenge` seam introduced in 3.5.1 could
+  be reused by individual site adapters later; the foundation is laid
+  but the wiring is not.
+- **Per-URL retry inside `ChapterListService.collectSequential`** rather
+  than whole-discovery retry in `discoverJobChapters`. See 3.6 rejected
+  alternative C.
+- **Bumping `CHALLENGE_MAX_WAIT_MS` or `CHALLENGE_BACKOFF_MS`**.
+  AGENTS.md mandates these constants are ported line-for-line from v1
+  and that any change requires a deviation-log entry against the
+  relevant phase design doc. The proposed fix reuses them as-is; no
+  threshold tuning. If real-world Cloudflare flows need longer, that is
+  a separate deviation task with its own evidence and ADR entry, not
+  bundled into this fix.
+- **Persisting a partial discovery result across the retry** so a 100-
+  chapter walk does not have to restart from chapter 1 after a mid-walk
+  challenge. That is a real enhancement (and would mirror
+  `JsonSessionStore`'s scrape-phase checkpointing), but it requires a
+  new partial-discovery persistence layer that does not exist today
+  (`ChapterListService` is stateless and returns the full list at the
+  end). Out of scope for fixing the immediate "browser closes without
+  waiting" bug; the proposed whole-discovery retry is the minimum
+  viable fix.
+
+---
+
+## 4. Out-of-Scope
 
 These were considered and excluded:
 

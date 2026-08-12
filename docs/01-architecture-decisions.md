@@ -280,3 +280,146 @@ no longer `cloakbrowser.path()` (which never existed) but `ensureBinary()` +
 - `src/adapters/browser-playwright/PlaywrightBrowserPort.ts:73-93` — the launch
   wiring.
 - `docs/phase-1/deviation-log.md` D2 — implementation-side record of the same.
+
+---
+
+## ADR-007 — Wire the existing challenge machinery into the discovery phase (bug fix)
+
+**Context**
+
+User report + investigation in `docs/fix-issue-tui-url-cleanliness.md` §3
+land here. Manual sequential discovery (`ManualWizardScreen` →
+`ManualDiscoveryScreen` → `discoverJobChapters`) closes the browser the moment
+the first `page.goto` lands on a Cloudflare / anti-bot challenge page. The
+existing challenge machinery (`ChapterExtractor.waitOutChallenge` + 30 s
+in-page poll + `SecurityChallengeError` + 45 s
+`CHALLENGE_BACKOFF_MS` retry in `ScrapeService.ts:233-275`) only ran in the
+scrape phase, never in the discovery phase. Discovery had two asymmetric
+lifecycle phases in `runJob.ts:54-56`:
+
+1. **Discovery phase** (`discoverJobChapters`) launched its own browser, walked
+   the TOC or next-button chain via `ChapterListService`, and unconditionally
+   closed the browser in a `finally` block. Neither `DiscoveryService.ts`
+   nor `ChapterListService.ts` imported or called `waitOutChallenge`,
+   `detectChallenge`, or `SecurityChallengeError`.
+
+2. **Scrape phase** (`ScrapeService.run`) calls `ChapterExtractor.extract`
+   which calls `waitOutChallenge` after every `page.goto`
+   (`ChapterExtractor.ts:169`) and `ScrapeService` applies the 45 s
+   `CHALLENGE_BACKOFF_MS` retry on `SecurityChallengeError`
+   (`ScrapeService.ts:233-275`).
+
+Result: discovery returned a one-URL (or zero-URL) list with no retry,
+forcing the user to restart manually. Same defect on the `toc`
+discovery method (zero links collected because the CF page has no `<a href>`
+anchors).
+
+**Decision**
+
+The minimal, in-pattern fix reuses the existing challenge machinery
+verbatim at two seams in `core/services/`:
+
+1. **`ChapterListService` constructor gains an optional `extractor?:
+   ChapterExtractor` arg.** `collectSequential` and `discoverTOC` call
+   `extractor.waitOutChallenge(page)` after every `page.goto` and throw
+   `SecurityChallengeError` on a `"stuck"` outcome instead of silently
+   breaking the walk. The existing catch block in `collectSequential`
+   propagates `SecurityChallengeError` (instanceof check) so the caller's
+   retry loop can handle it. Absent for callers that never present a
+   challenge (preserves pre-fix behaviour exactly).
+
+2. **`discoverJobChapters` wraps the discovery body in a retry loop.** It
+   constructs a `ChapterExtractor` internally (mirroring `ScrapeService.ts:78`
+   `new ChapterExtractor(this.deps.log, ...)`), launches a fresh browser per
+   attempt, runs `discoverTOC` / `collectSequential`, and on
+   `SecurityChallengeError` with `attempt <= DISCOVERY_MAX_RETRIES` emits
+   `challenge.waiting`, backs off `attempt * 45_000ms`, and relaunches.
+   Otherwise bubbles. This mirrors `ScrapeService.ts:233-275` line for line
+   in shape: same backoff math, same `challenge.waiting` UI event, same
+   `maxRetries = 3`. The relaunch is critical: a fresh browser context gets a
+   fresh TLS session + fingerprint seed, which is the documented behavioural
+   contract for a transient challenge (reusing a single context across
+   retries would just keep hitting the same fingerprint).
+
+**Rejected alternatives** (full reasoning in `docs/fix-issue-tui-url-cleanliness.md`
+§3.6):
+
+- **Reuse ScrapeService's wait-out by running discovery inside the scrape
+  loop.** Discovery and scrape have fundamentally different per-iteration
+  shapes (discovery walks a chain via `resolveNext`; scrape does `extract` on
+  a known URL). Merging them forces ScrapeService to know about
+  `nextButtonLocators`, which breaks the existing invariant that
+  ScrapeService is method-agnostic (`grep job.method ScrapeService.ts`
+  returns zero matches today).
+
+- **Add a `gotoAndWaitOutChallenge` method on the `BrowserPort` interface.**
+  Adds challenge-detection signatures to the port, which mixes domain
+  semantics (challenges are an app-layer concept) into the browser
+  abstraction. The existing design correctly keeps `waitOutChallenge` in
+  `ChapterExtractor` (a core service). The proposed fix stays in that layer.
+
+- **Per-URL retry inside `ChapterListService.collectSequential`.** Discovery
+  walks a chain, not a fixed list, so retrying a single URL mid-walk just
+  re-hits the same fingerprint on the same context. The full-relaunch retry
+  in `discoverJobChapters` actually works because it gets a new context +
+  browser per attempt.
+
+- **Duplicate `CHALLENGE_MAX_WAIT_MS` / `CHALLENGE_BACKOFF_MS` constants in
+  ChapterListService** instead of injecting `ChapterExtractor`. AGENTS.md
+  mandates the three-tier ordering and the 2,000-char body-text length gate,
+  and explicitly warns that challenge detection logic must not be silently
+  diverged from the v1 baseline. `ChapterExtractor.detectChallenge` /
+  `waitOutChallenge` are the canonical, tested implementation; injecting it
+  preserves the existing detection semantics exactly.
+
+**Consequences**
+
+- Discovery that previously failed silently with a short / wrong URL list
+  now waits up to ~30 s + 3x45 s for a Cloudflare challenge to clear,
+  mirroring the scrape phase's existing behaviour. Users on sites that never
+  present a challenge see no change (the `extractor?` arg is optional and
+  the `if (this.extractor)` branch is a no-op when absent).
+- A new `challenge.waiting` event fires on the discovery code path. The
+  event type already existed in the `ScrapeEvent` union (scrape phase emits
+  it). No new event type invented; `ClackUIAdapter.emit` already routes
+  `challenge.waiting` to a `prompt.log("warn", ...)` row (`ClackUIAdapter.ts:57-58`),
+  so the user already sees the wait without a redundant `onEvent` handler in
+  `ManualDiscoveryScreen`. See `docs/bug-fix-discovery-deviation-log.md` D-FIX-1
+  for the deviation from the proposal doc §3.5.3 (which pre-dated the
+  ClackUIAdapter `challenge.waiting` log case).
+- `ChapterListService` had zero tests of its own before this change; the fix
+  ships the first ones (`tests/chapter-list-service.test.ts`,
+  `tests/discovery-service.test.ts`). Both follow the parity-test pattern
+  AGENTS.md specifies for new service code: in-memory `StaticPage` /
+  `MutableFakePage` doubles, `vi.useFakeTimers()` to drive the 30 s poll and
+  45 s backoff without wall-clock waits, no real browser, no network.
+
+**Evidence**
+
+- `src/core/services/ChapterListService.ts` constructor at line 36-40 gains
+  the optional `extractor?: ChapterExtractor`; `collectSequential`
+  (`ChapterListService.ts:178-192`) calls `waitOutChallenge` after each
+  `page.goto` and re-throws `SecurityChallengeError`, propagating up through
+  the existing `catch` block's `instanceof` check. `discoverTOC`
+  (`ChapterListService.ts:69-74`) does the same.
+- `src/core/services/DiscoveryService.ts:62-119` wraps the body in
+  `while (true) { attempt++ }` and on caught `SecurityChallengeError` with
+  `attempt <= DISCOVERY_MAX_RETRIES` (3) emits `challenge.waiting`, logs a warn,
+  backs off `attempt * 45_000ms`, and `continue`s (the `finally` block then
+  closes the old browser before the new launch). On the 4th attempt
+  (or any non-challenge error) it `throw e` and bubbles.
+- `src/core/services/DiscoveryService.ts:27-58` constructs the
+  `ChapterExtractor` internally and threads it through `new ChapterListService(...)`.
+- `tests/chapter-list-service.test.ts` covers the three contracts:
+  stuck-challenge throws `SecurityChallengeError`; cleared-challenge
+  proceeds with the walk; no-extractor (pre-fix behaviour) breaks silently
+  on the first iteration and returns the first URL only.
+- `tests/discovery-service.test.ts` covers: stuck-challenge retries up to
+  4 total launches (attempt 4 bubbles `SecurityChallengeError`),
+  second-attempt-succeeds (fresh browser on attempt 2 walks `ch1 → ch2`),
+  and `job.chapterLinks` pre-resolved short-circuit (0 launches).
+- `pnpm test` stays green: 14 files, 210 tests (previously 12 files, 204
+  tests; new tests added 6 entries, no regressions).
+- `pnpm typecheck` stays clean.
+- Implementation record + divergence from `docs/fix-issue-tui-url-cleanliness.md`
+  tracked in `docs/bug-fix-discovery-deviation-log.md`.
