@@ -5,6 +5,7 @@
 
 import { PlaywrightBrowserPort } from "../adapters/browser-playwright/PlaywrightBrowserPort.js";
 import { JsonSessionStore } from "../adapters/store-json/JsonSessionStore.js";
+import { JsonNovelRegistryStore } from "../adapters/store-json/JsonNovelRegistryStore.js";
 import { ArchiverEpubWriter } from "../adapters/epub-archiver/ArchiverEpubWriter.js";
 import { NoopUIAdapter } from "../adapters/ui-noop/NoopUIAdapter.js";
 import { createWinstonLogger } from "../adapters/logger-winston/WinstonLogger.js";
@@ -35,6 +36,7 @@ export async function runJob(
   const browser = new PlaywrightBrowserPort();
   const sessions = new JsonSessionStore(log);
   const epub = new ArchiverEpubWriter(log);
+  const registry = new JsonNovelRegistryStore(log);
 
   const cookies = opts.cookies ?? [];
 
@@ -82,6 +84,7 @@ export async function runJob(
     epub,
     ui,
     log,
+    registry,
   });
 
   // Pipeline Phase 3: forward job.volumes to ScrapeService.run so the auto

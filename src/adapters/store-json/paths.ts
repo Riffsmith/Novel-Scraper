@@ -77,3 +77,7 @@ export function configJsonPath(): string {
 export function configJsonBakPath(): string {
   return path.join(resolveConfigDir(), "config.json.bak");
 }
+
+export function novelRegistryFilePath(): string {
+  return path.join(resolveConfigDir(), "novel-registry.json");
+}

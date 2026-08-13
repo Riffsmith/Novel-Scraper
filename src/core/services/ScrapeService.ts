@@ -32,6 +32,9 @@ import type { EpubWriter } from "../../ports/EpubWriter.js";
 import type { UIAdapter } from "../../ports/UIAdapter.js";
 import type { Logger } from "../../ports/Logger.js";
 import type { SiteAdapter } from "../domain/SiteAdapter.js";
+import type { NovelRegistryStore } from "../../ports/NovelRegistryStore.js";
+import type { NovelRegistryEntry } from "../domain/NovelRegistry.js";
+import { generateRegistryId } from "../domain/NovelRegistry.js";
 
 const CHALLENGE_BACKOFF_MS = 45_000;
 const CHECKPOINT_SAVE_INTERVAL_MS = 4_000;
@@ -63,6 +66,7 @@ export class ScrapeService {
       epub: EpubWriter;
       ui: UIAdapter;
       log: Logger;
+      registry?: NovelRegistryStore;
       // Optional site-adapter hooks (ADR-P7-D + D5 deviation). When present,
       // forwarded to ChapterExtractor so its extract() call runs
       // adapter.collectFootnotes + adapter.processChapterContent after the
@@ -431,6 +435,28 @@ export class ScrapeService {
 
         if (sessionRef) {
           await this.deps.sessions.delete(sessionRef.id);
+        }
+
+        // Update novel registry
+        if (this.deps.registry) {
+          const now = new Date().toISOString();
+          const existingEntry = await this.deps.registry.get(
+            generateRegistryId(job.metadata.title, job.metadata.author),
+          );
+          const entry: NovelRegistryEntry = {
+            id: existingEntry?.id ?? generateRegistryId(job.metadata.title, job.metadata.author),
+            title: job.metadata.title,
+            author: job.metadata.author,
+            url: job.tocUrl || job.firstChapterUrl || "",
+            totalChapters: chapters.length,
+            downloadedChapters: chapters.filter((c) => c.wordCount > 0).length,
+            lastScraped: now,
+            epubPath,
+            firstScraped: existingEntry?.firstScraped ?? now,
+            status: "ongoing",
+          };
+          await this.deps.registry.upsert(entry);
+          this.deps.log.info(`Updated novel registry: ${entry.title}`);
         }
       }
 
