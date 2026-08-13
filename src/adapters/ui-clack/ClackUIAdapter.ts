@@ -28,10 +28,14 @@ export class ClackUIAdapter implements UIAdapter {
   emit(e: ScrapeEvent): void {
     // Forward to any live observer (TaskScreen's progress-bar wiring) BEFORE
     // the per-event log line so progress counts are coherent with the line.
-    // Routine, high-frequency events (chapter.done, discovery.progress,
-    // checkpoint.saved) are intentionally NOT logged here - they drive the
-    // TaskScreen spinner instead of scrolling the terminal. Only warnings,
-    // errors, and one-time milestones are logged persistently.
+    // Routine, high-frequency events (chapter.start, chapter.done,
+    // chapter.retry, challenge.waiting, discovery.progress, checkpoint.saved)
+    // are intentionally NOT logged as persistent clack lines here — they
+    // drive the TaskScreen spinner in-place via `onEvent` instead of
+    // scrolling the terminal. Only warnings, errors, and one-time
+    // milestones are logged persistently; this keeps the scrape progress bar
+    // fixed and the noise during the per-chapter wait/retry backoffs down to
+    // a single "current chapter is being scraped" line that updates in place.
     if (this.eventCb) this.eventCb(e);
     switch (e.type) {
       case "discovery.started":
@@ -42,20 +46,20 @@ export class ClackUIAdapter implements UIAdapter {
       case "discovery.done":
         this.prompt.log("success", `Discovered ${e.urls.length} chapter URLs`);
         break;
+      case "chapter.start":
+        // Transient status — drives the TaskScreen spinner, not a log line.
+        break;
       case "chapter.done":
         if (this.progressCb) this.progressCb(e.index, -1);
         break;
       case "chapter.retry":
-        this.prompt.log(
-          "warn",
-          `Retry ch.${e.index} (attempt ${e.attempt}/${e.max}${e.challenge ? ", challenge" : ""}, backoff ${e.backoffMs}ms)`,
-        );
+        // Transient status — drives the TaskScreen spinner, not a log line.
         break;
       case "chapter.failed":
         this.prompt.log("error", `Failed ch.${e.index}: ${e.url} - ${e.error}`);
         break;
       case "challenge.waiting":
-        this.prompt.log("warn", `Anti-bot challenge waiting on ${e.url}`);
+        // Transient status — drives the TaskScreen spinner, not a log line.
         break;
       case "checkpoint.saved":
         break;

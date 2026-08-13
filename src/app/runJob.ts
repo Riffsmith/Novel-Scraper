@@ -45,6 +45,27 @@ export async function runJob(
       resume = { session };
       log.info(`Resuming session: ${session.id} — ${session.completedChapters.length} chapters already done`);
     }
+  } else {
+    // Auto-resume (issue 3): when the user re-runs `wnscrape run --job foo.yaml`
+    // WITHOUT `--resume`, look for an existing in-progress checkpoint whose
+    // entry URL matches this job's natural entry key (tocUrl for toc-method,
+    // firstChapterUrl for sequential) and resume from it. This means any
+    // interrupted scrape — Ctrl+Q, crash, network drop — just works on the
+    // next run without the user ever needing `--resume`. The lookup is on
+    // `entryUrl` (recorded on the session at first-run time, mirroring the
+    // TUI's NewScrapeScreen `findByEntryUrl` matching path). The first-run
+    // session is now always persisted by ScrapeService.run, so the user no
+    // longer has to opt into resumability.
+    const entryUrl = job.tocUrl || job.firstChapterUrl || "";
+    if (entryUrl) {
+      const existing = await sessions.findByEntryUrl(entryUrl);
+      if (existing) {
+        resume = { session: existing };
+        log.info(
+          `Auto-resuming existing session: ${existing.id} — ${existing.completedChapters.length}/${existing.chapterUrls.length} chapters already done`,
+        );
+      }
+    }
   }
 
   if (resume) {

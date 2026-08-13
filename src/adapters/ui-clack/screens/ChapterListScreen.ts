@@ -218,7 +218,7 @@ function printChapterList(
   show.forEach((link, i) => {
     ctx.prompt.log(
       "dim",
-      `  ${String(i + 1).padStart(5)}.  ${truncateUrl(link, 80)}`,
+      `  ${String(i + 1).padStart(5)}.  ${truncateUrl(link, 200)}`,
     );
   });
   if (links.length > maxDisplay) {

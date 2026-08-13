@@ -90,6 +90,17 @@ export function createDefaultWinstonLogger(): Logger {
 
     transports: [
       new winston.transports.Console({
+        // Clamp the Console transport to `error` only so the per-chapter
+        // `warn` diagnostics emitted by ScrapeService / ChapterExtractor
+        // (challenge detection, retry backoffs, dropped-chapter errors) flow
+        // to the rolling file logs but NOT to stdout/stderr - otherwise they
+        // interleave with the TUI's spinner / clack persistent log region
+        // and surface as one progress-bar line per retry attempt while the
+        // scrape is mid-wait, exactly the noise the user reported. Errors
+        // still surface on the live console so a fatal crash is visible
+        // immediately; routine progress comes through UIAdapter events that
+        // the TUI renders into the in-place spinner.
+        level: "error",
         format: winston.format.combine(
           winston.format.timestamp({ format: "HH:mm:ss" }),
           consoleFormat,

@@ -7,6 +7,7 @@ export type ScrapeEvent =
   | { type: "discovery.started"; url: string }
   | { type: "discovery.progress"; found: number; pages: number }
   | { type: "discovery.done"; urls: string[] }
+  | { type: "chapter.start"; index: number; url: string }
   | { type: "chapter.done"; index: number; title: string; words: number }
   | {
       type: "chapter.retry";

@@ -14,6 +14,7 @@ import { ChapterExtractor } from "./ChapterExtractor.js";
 
 import type { Chapter } from "../domain/Chapter.js";
 import type {
+  ScraperConfig,
   ScrapeError,
   ScrapeResult,
   JobConfig,
@@ -35,8 +36,25 @@ import type { SiteAdapter } from "../domain/SiteAdapter.js";
 const CHALLENGE_BACKOFF_MS = 45_000;
 const CHECKPOINT_SAVE_INTERVAL_MS = 4_000;
 
+// Sentinel rejection value carried by the internal abort promise so
+// `cancelableDelay` can distinguish "aborted" from a real error without
+// leaking the cancellation as an exception to its caller.
+class CancelSymbol {
+  // Marker class only - identity is what matters, never a payload.
+}
+
 export class ScrapeService {
   private abortFlag = false;
+  // Resolves when cancel() is called so in-flight `cancelableDelay` awaits
+  // (per-task pre-delay + retry backoffs) short-circuit immediately —
+  // otherwise Ctrl+Q mid-scrape blocks on every queued task's full
+  // delay/backoff before the queue drains. Drives flushOnQuit →
+  // `cancelActive()` in app/tui.ts so a final checkpoint writes within
+  // milliseconds instead of minutes.
+  private abortPromise = new Promise<never>((_, reject) => {
+    this.abortReject = reject;
+  });
+  private abortReject: ((e: unknown) => void) | undefined;
 
   constructor(
     private deps: {
@@ -60,6 +78,27 @@ export class ScrapeService {
 
   cancel(): void {
     this.abortFlag = true;
+    // Resolve the abort promise with a sentinel rejection so any
+    // `Promise.race([delay, abortPromise])` in `cancelableDelay` returns
+    // immediately. The receiving `cancelableDelay` swallows this rejection so
+    // callers see a clean `void` resolution, not an exception.
+    if (this.abortReject) this.abortReject(new CancelSymbol());
+  }
+
+  /**
+   * Delay that resolves immediately when `cancel()` fires. Used for every
+   * per-task pre-delay and retry backoff in `processTask` so Ctrl+Q drops the
+   * queue out within milliseconds instead of waiting `delayMax * retries`
+   * (or `CHALLENGE_BACKOFF_MS * retries` for stuck-challenge backoffs). The
+   * rejection from the internal abort promise is swallowed here so the
+   * caller observes a normal `void` resolution.
+   */
+  private cancelableDelay(ms: number): Promise<void> {
+    if (this.abortFlag) return Promise.resolve();
+    return Promise.race<Promise<void>>([
+      delay(ms),
+      this.abortPromise.catch(() => {}),
+    ]);
   }
 
   async run(
@@ -74,6 +113,15 @@ export class ScrapeService {
   ): Promise<ScrapeResult> {
     const startedAt = Date.now();
     this.abortFlag = false;
+    // Reset the abort promise so a follow-up run on the same ScrapeService
+    // (e.g. the TUI starting a new scrape after a Ctrl+Q'd one) gets a fresh
+    // cancellation handle. The previous one is already rejected; without a
+    // reset, every subsequent `cancelableDelay` would short-circuit instantly
+    // because `Promise.race([delay, abortPromise.catch(() => {})])` wins on
+    // the already-resolved promise immediately.
+    this.abortPromise = new Promise<never>((_, reject) => {
+      this.abortReject = reject;
+    });
 
     const extractor = new ChapterExtractor(this.deps.log, this.deps.siteAdapter);
     const browser = await this.deps.browser.launch({
@@ -118,7 +166,52 @@ export class ScrapeService {
       }
       const errors: ScrapeError[] = [];
       let completed = alreadyDone.size;
-      const sessionRef = resume?.session;
+
+      // Always keep a sessionRef on disk so a crash, Ctrl+Q, network drop, or
+      // any mid-run interruption leaves a resumable checkpoint behind. On a
+      // resume pass this is the loaded `resume.session`; on a fresh run a
+      // session is created up-front so the first checkpoint write succeeds
+      // even if the scrape dies during the very first chapter (otherwise the
+      // maybePersist() guard below is a silent no-op and nothing is saved).
+      // Entry URL mirrors the TUI's `findByEntryUrl` match key: the TOC URL
+      // for toc-method jobs, the first chapter URL for sequential, otherwise
+      // the first discovered URL. Fields that already exist on `resume.session`
+      // (completedChapters/errors/updated) are *carried over* unchanged on
+      // resume; the fresh-run branch is the only one that constructs a new
+      // object from scratch.
+      const sessionRef: ScrapeSession =
+        resume?.session ??
+        (await (async () => {
+          const derivedEntryUrl =
+            job.tocUrl ||
+            job.firstChapterUrl ||
+            (urls.length > 0 ? urls[0] : "");
+          const derivedDomain = (() => {
+            try {
+              return derivedEntryUrl
+                ? new URL(derivedEntryUrl).hostname.replace(/^www\./i, "")
+                : "";
+            } catch {
+              return "";
+            }
+          })();
+          const nowIso = new Date().toISOString();
+          const fresh: ScrapeSession = {
+            id: crypto.randomUUID(),
+            status: "in-progress",
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            domain: derivedDomain,
+            entryUrl: derivedEntryUrl,
+            novelTitle: job.metadata.title,
+            config: job as unknown as ScraperConfig,
+            chapterUrls: urls,
+            completedChapters: [],
+            errors: [],
+            ...(job.volumes ? { volumes: job.volumes } : {}),
+          };
+          return fresh;
+        })());
 
       // Context pool
       const ctxPool: ContextHandle[] = [];
@@ -171,8 +264,14 @@ export class ScrapeService {
         const ctx = nextCtx();
         const page = await this.deps.browser.newPage(ctx);
 
+        this.deps.ui.emit({
+          type: "chapter.start",
+          index: task.index + 1,
+          url: task.url,
+        });
+
         try {
-          await delay(randomInt(job.delayMin, job.delayMax));
+          await this.cancelableDelay(randomInt(job.delayMin, job.delayMax));
 
           const chapter = await extractor.extract(
             page,
@@ -210,8 +309,17 @@ export class ScrapeService {
                 challenge: false,
                 backoffMs: backoff,
               });
-              await delay(backoff);
-              await queue.add(() => processTask(task));
+              await this.cancelableDelay(backoff);
+              // Fire-and-forget the retry re-queue. Awaiting the recursive
+              // `queue.add` here holds the original concurrency slot for the
+              // full retry delay + retry attempt - with concurrency 1 that
+              // freezes every other queued chapter for minutes (sticky
+              // challenge = up to 3×45s of dead time per retry), so the user
+              // sees the scrape "pause without skipping or retrying". A
+              // re-queued task is still tracked by p-queue (`size`/`pending`
+              // reflect it), so `queue.onIdle()` in the run path correctly
+              // awaits every scheduled retry before resolving.
+              void queue.add(() => processTask(task));
               return;
             }
             errors.push({
@@ -251,8 +359,10 @@ export class ScrapeService {
             this.deps.log.warn(
               `${isChallenge ? "Security challenge on" : "Error on"} ch.${task.index + 1} – retrying (${task.retries}/${maxRetries}) after ${backoff}ms: ${(e as Error).message}`,
             );
-            await delay(backoff);
-            await queue.add(() => processTask(task));
+            await this.cancelableDelay(backoff);
+            // Same fire-and-forget rationale as the null-content branch
+            // above: don't hold the concurrency slot across the retry.
+            void queue.add(() => processTask(task));
             return;
           }
           errors.push({

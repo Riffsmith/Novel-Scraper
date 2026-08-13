@@ -104,20 +104,38 @@ export class TaskScreen implements Screen {
         },
       });
     }
-    // Chapter completions and discovery progress drive the spinner's live
-    // message instead of scrolling the log - the chapter name is visible
-    // only for as long as it's the most-recently-completed one, then the
-    // next update overwrites it in place.
+    // Chapter status drives the spinner's live in-place message instead of
+    // scrolling the log region: chapter.start shows the current chapter (only
+    // once), chapter.done bumps the bar + shows the just-finished title,
+    // chapter.retry / challenge.waiting surface the in-flight retry as a
+    // brief status line that the next event overwrites in place. Warnings and
+    // one-time milestones (chapter.failed, discovery.done, epub.*) keep their
+    // existing persistent clack log lines via ClackUIAdapter.emit; those are
+    // not duplicated here.
     ui.onEvent((e) => {
-      if (e.type === "chapter.done") {
+      if (e.type === "chapter.start") {
+        spin.message?.(
+          `${fmt.taskBar(done, total)}  Scraping ch.${e.index}/${total}…`,
+        );
+      } else if (e.type === "chapter.done") {
         done++;
         if (typeof registry.publishProgress === "function")
           registry.publishProgress(done);
         spin.message?.(`${fmt.taskBar(done, total)}  ${e.title}`);
+      } else if (e.type === "chapter.retry") {
+        spin.message?.(
+          `${fmt.taskBar(done, total)}  Retry ch.${e.index} (${e.attempt}/${e.max}${e.challenge ? ", challenge" : ""})…`,
+        );
+      } else if (e.type === "challenge.waiting") {
+        spin.message?.(
+          `${fmt.taskBar(done, total)}  Waiting out anti-bot challenge on ch.${e.url}…`,
+        );
       } else if (e.type === "discovery.progress") {
         spin.message?.(
           `Discovering chapters… ${e.found} found across ${e.pages} pages`,
         );
+      } else if (e.type === "epub.started") {
+        spin.message?.(`${fmt.taskBar(done, total)}  Packaging EPUB…`);
       }
     });
 
