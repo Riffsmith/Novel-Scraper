@@ -76,7 +76,10 @@ export class ScrapeService {
       // keeps running. Injected via deps (not via run()) so the composition
       // root owns the adapter resolution (matching the runJob pattern for
       // every other adapter).
-      siteAdapter?: Pick<SiteAdapter, "processChapterContent" | "collectFootnotes">;
+      siteAdapter?: Pick<
+        SiteAdapter,
+        "processChapterContent" | "collectFootnotes"
+      >;
     },
   ) {}
 
@@ -127,7 +130,10 @@ export class ScrapeService {
       this.abortReject = reject;
     });
 
-    const extractor = new ChapterExtractor(this.deps.log, this.deps.siteAdapter);
+    const extractor = new ChapterExtractor(
+      this.deps.log,
+      this.deps.siteAdapter,
+    );
     const browser = await this.deps.browser.launch({
       headless: job.headless,
       humanize: false,
@@ -440,11 +446,15 @@ export class ScrapeService {
         // Update novel registry
         if (this.deps.registry) {
           const now = new Date().toISOString();
-          const existingEntry = await this.deps.registry.get(
-            generateRegistryId(job.metadata.title, job.metadata.author),
+          const existingEntry = (await this.deps.registry.list()).find(
+            (e) =>
+              e.title === job.metadata.title &&
+              e.author === job.metadata.author,
           );
           const entry: NovelRegistryEntry = {
-            id: existingEntry?.id ?? generateRegistryId(job.metadata.title, job.metadata.author),
+            id:
+              existingEntry?.id ??
+              generateRegistryId(job.metadata.title, job.metadata.author),
             title: job.metadata.title,
             author: job.metadata.author,
             url: job.tocUrl || job.firstChapterUrl || "",

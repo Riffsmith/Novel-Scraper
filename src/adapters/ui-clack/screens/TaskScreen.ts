@@ -26,6 +26,7 @@ import { ScrapeService } from "../../../core/services/ScrapeService.js";
 import { ArchiverEpubWriter } from "../../epub-archiver/ArchiverEpubWriter.js";
 import { ClackUIAdapter } from "../ClackUIAdapter.js";
 import { JsonSessionStore } from "../../store-json/JsonSessionStore.js";
+import { JsonNovelRegistryStore } from "../../store-json/JsonNovelRegistryStore.js";
 import type { Screen, ShellContext, ScreenResult } from "../ShellContext.js";
 import type {
   JobConfig,
@@ -80,6 +81,7 @@ export class TaskScreen implements Screen {
     // final checkpoint via its sessions.save (if a session is in flight).
     const sessions = new JsonSessionStore(ctx.log);
     const epub = new ArchiverEpubWriter(ctx.log);
+    const novelregistry = new JsonNovelRegistryStore(ctx.log);
     const ui = new ClackUIAdapter(ctx.prompt);
     const scrapeService = new ScrapeService({
       browser: ctx.browser,
@@ -87,6 +89,7 @@ export class TaskScreen implements Screen {
       epub,
       ui,
       log: ctx.log,
+      registry: novelregistry,
       siteAdapter: sp.siteAdapter,
     });
 
